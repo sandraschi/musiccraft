@@ -48,3 +48,21 @@ that gate v1. No code until they are written down.
 - **1:** scope freeze — answer §5, lock the verb list.
 - **2:** pilot verbs (`project`, `track`, `export`) + `just ci` + fixtures.
 - **3:** vocal synth path + first democraft recipe (`music/stems-sim`).
+
+## 7. UI/UX Architecture & Menu Bar Standard
+
+In accordance with [`CRAFT_MENU_BAR_STANDARD.md`](../../mcp-central-docs/standards/rust-artcraft/CRAFT_MENU_BAR_STANDARD.md):
+- **Pattern 2 (Viewport-Centric Studio DAW Workstation):** Persistent multi-track timeline arrangement stage with mixer strips, piano roll, and vocal phoneme curve inspector. Top quick button row acts as accelerators into the `View` menu. To add a new synth module or audio effect:
+  1. Register a visibility toggle in the `View` or `Window` menu.
+  2. Add an entry in the sidebar Track / Synth toolbox.
+  3. Wire the action directly into the universal `Command::dispatch` bus.
+- **Top Menu Bar Hierarchy:**
+  - `File`: New Project (`Ctrl+N`), Open Project (`Ctrl+O`), Open Recent ▸, Save (`Ctrl+S`), Save As... (`Ctrl+Shift+S`), Export Mix / Stems (`Ctrl+E`), Close (`Ctrl+W`), Quit (`Ctrl+Q`).
+  - `Edit`: Undo (`Ctrl+Z`), Redo (`Ctrl+Y`), Cut, Copy, Paste, Select All, Preferences (`Ctrl+,`).
+  - `View`: Multi-Track Timeline, Mixer Console, Piano Roll / Vocal Curve Editor, Stem Separator View, Master Loudness HUD, Theme (`Dark`/`Light`).
+  - `Insert`: Add Audio Track, Add MIDI Track, Insert Virtual Vocal Line, Add Effect Plugin.
+  - `Modify`: Quantize Notes, Transpose Pitch, Split Audio Region, Normalize Clip.
+  - `Commands`: Render Master Mix, Run Stem Separation, Synthesize Vocal Line, Export Handoff Package to DJCraft.
+  - `Window`: Reset Layout, Arrangement Viewport, Mixer Drawer, Vocal Inspector.
+  - `Help` (Mandatory 5-Dialog Suite): `Command Palette...` (`Ctrl+K`), `Keyboard Shortcuts...` (`F1`), `Project Files & Docs...`, `Licenses & Notices...`, `About MusicCraft`.
+- **Behavioral Mechanics:** Smooth `switch_on_hover` between top-level menus, zero-unsafe immediate-mode rendering, and headless `--smoke` parity.
