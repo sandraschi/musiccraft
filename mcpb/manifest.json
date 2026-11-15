@@ -1,0 +1,99 @@
+{
+  "manifest_version": "0.2",
+  "name": "musiccraft",
+  "display_name": "MusicCraft",
+  "version": "__VERSION__",
+  "description": "MusicCraft Studio DAW, Virtual Vocal Synthesizer, Stem Separator & Offline Mix Renderer (17 tools).",
+  "author": {
+    "name": "Sandra Schipal",
+    "url": "https://github.com/sandraschi"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sandraschi/musiccraft"
+  },
+  "license": "MIT OR Apache-2.0",
+  "server": {
+    "type": "binary",
+    "entry_point": "musiccraft-mcp.exe",
+    "mcp_config": {
+      "command": "${__dirname}/musiccraft-mcp.exe",
+      "args": ["mcp"]
+    }
+  },
+  "compatibility": {
+    "platforms": [
+      "win32"
+    ]
+  },
+  "tools": [
+    {
+      "name": "musiccraft_status",
+      "description": "Inspect MusicCraft engine version, sample rate, and capabilities."
+    },
+    {
+      "name": "musiccraft_project_new",
+      "description": "Create a new .mcraft song project with name, BPM, and musical key."
+    },
+    {
+      "name": "musiccraft_project_open",
+      "description": "Load an existing .mcraft song project from disk."
+    },
+    {
+      "name": "musiccraft_project_save",
+      "description": "Save the active song project to a .mcraft file."
+    },
+    {
+      "name": "musiccraft_project_info",
+      "description": "Inspect song project metadata, track count, vocal line, and stems."
+    },
+    {
+      "name": "musiccraft_track_add",
+      "description": "Add an audio, midi, vocal, or stem track to the song arrangement."
+    },
+    {
+      "name": "musiccraft_track_list",
+      "description": "List all tracks and regions in the song project."
+    },
+    {
+      "name": "musiccraft_track_set_mix",
+      "description": "Update track volume (dB), pan (-1..1), mute, or solo state."
+    },
+    {
+      "name": "musiccraft_region_add",
+      "description": "Insert a new MIDI or audio region onto a track."
+    },
+    {
+      "name": "musiccraft_region_split",
+      "description": "Split a timeline region into two regions at split_beat."
+    },
+    {
+      "name": "musiccraft_modify_quantize",
+      "description": "Snap MIDI note start beats to the nearest rhythmic grid."
+    },
+    {
+      "name": "musiccraft_modify_transpose",
+      "description": "Transpose MIDI notes and optional vocal line by semitones (-48..48)."
+    },
+    {
+      "name": "musiccraft_vocal_synth",
+      "description": "Synthesize a virtual singer vocal line from phonemes (OPERA, SOPRANO, TENOR, CHOIR, SYNTH)."
+    },
+    {
+      "name": "musiccraft_stem_split",
+      "description": "Separate a WAV mix (or project demo mix) into 4 stems: vocals, drums, bass, other."
+    },
+    {
+      "name": "musiccraft_mix_render",
+      "description": "Offline-render the song arrangement into a mastered 16-bit stereo WAV with LUFS telemetry."
+    },
+    {
+      "name": "musiccraft_export_stems",
+      "description": "Export master mix, 4 stems, and handoff.json manifest for djcraft."
+    },
+    {
+      "name": "musiccraft_export_song",
+      "description": "Export .mcraft project, master mix, stems, and handoff manifest into out_dir."
+    }
+  ]
+}

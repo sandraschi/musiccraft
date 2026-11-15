@@ -18,3 +18,4 @@ outbox/
 *.log
 .DS_Store
 Thumbs.db
+/dist

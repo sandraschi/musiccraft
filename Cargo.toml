@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/musiccraft-core",
+    "crates/musiccraft-mcp",
+    "crates/musiccraft-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["MusicCraft Contributors"]
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["full"] }
+clap = { version = "4.5", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu"] }
+egui = "0.37"
+rfd = "0.15"
+
+# ArtCraft containment Layer 1: zero-panic policy across all crates.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
