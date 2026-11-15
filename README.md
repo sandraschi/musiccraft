@@ -1,48 +1,48 @@
-# MusicCraft (reserved — initial plan)
+# MusicCraft
 
-**Status:** `[ALPHA]` name reservation with an initial plan. No implementation
-yet. This repo exists so the fleet's music-studio umbrella has a home and the
-name isn't taken by someone else first. What is written below is intent, not
-documentation of running code. Implementation follows once the scope in
-`docs/PRD.md` is frozen.
+![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)
+![Rust 1.90+](https://img.shields.io/badge/rust-1.90%2B-orange?logo=rust)
+![MCP stdio](https://img.shields.io/badge/MCP-stdio-purple)
+![ArtCraft harness](https://img.shields.io/badge/ArtCraft-harness-green)
 
-## Why this repo
+**Pure-Rust ArtCraft DAW arrangement, virtual vocal synthesis, 4-band stem separation, and offline mix rendering studio.**
 
-Music is a wide field, and the fleet already touches it from five directions
-without a roof over them: DAW arrangement (`reaper-mcp`), stem work
-(`stems-mcp`), AI song generation (`songgeneration-mcp`, lessons from
-`suno-mcp`), vocal synthesis (`kyutai-mcp` vocal work), and live performance
-(`mixx-dj-mcp`, `virtualdj-mcp`, `djcraft`). MusicCraft is that roof: the
-studio where songs are arranged, sung, stemmed and mixed.
+## Install
 
-## Scope (initial plan)
+Tell Cursor, Claude, Antigravity, or OpenCode: **Install this.**
 
-- **DAW arrangement** — tracks, regions, stems in/out. Sources: `reaper-mcp`
-  (arrangement knowledge), `stems-mcp` (separation).
-- **Vocal synthesis / virtual opera singer** — a singable vocal line rendered
-  locally when the GPU allows, via user-token cloud when it doesn't. Sources:
-  the fleet's vocal-synth work (`songgeneration-mcp`, `kyutai-mcp`).
-- **Studio-to-stage link** — MusicCraft renders the stems and songs;
-  `djcraft` performs them. The boundary is deliberate and permanent (below).
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-craft.ps1
+```
 
-## Non-goals (explicit)
+## Architecture (3-Tier ArtCraft Containment Harness)
 
-- **Not a second djcraft.** Live 4-deck mixing, the Camelot wheel, stem
-  performance and the performance swarm stay in `djcraft`, which already owns
-  them. MusicCraft never grows decks.
-- **No cloud lock-in.** Local-first: runs fully local with no cloud tokens when
-  the GPU is up to it; falls back to cloud models (a few minutes on your own
-  Claude, Google, or OpenAI pro account) when it isn't.
-- **No notation software in v1.** Score engraving is deferred, not denied.
+- **`crates/musiccraft-core` (L1):** SongProject AST (`.mcraft`), 16-bit PCM WAV reader/writer (hostile-input fenced), formant-based virtual vocal synthesizer (`OPERA`, `SOPRANO`, `TENOR`, `CHOIR`, `SYNTH`), 4-band stem separator (`vocals`, `drums`, `bass`, `other`), offline mix renderer with RMS/Peak/LUFS telemetry, DJCraft handoff packager (`handoff.json`), and universal `Command::dispatch` bus. `#![forbid(unsafe_code)]` + zero-panic clippy lints.
+- **`crates/musiccraft-mcp` (L2):** Unified `clap` CLI (`--json`, `commands`, `describe`, `run`, `project`, `track`, `stem`, `vocal`, `mix`, `export`, `--smoke`) and hand-rolled MCP `2024-11-05` stdio JSON-RPC server (`mcp`).
+- **`crates/musiccraft-app` (L3):** Pure-Rust `eframe` / `egui 0.37` Pattern 2 DAW workstation calling `musiccraft_core::dispatch_on_project` directly in-process. Features the 8-menu Craft Menu Bar (`File`, `Edit`, `View`, `Insert`, `Modify`, `Commands`, `Window`, `Help`) with `switch_on_hover`, the 5-item Help suite, `harsh_visuals()`, Tofu Guard (`glyph_allowlist`), and headless `--smoke` parity.
 
-## Harness (when built)
+## Quick Start
 
-Implements the Storytold craft-app harness like the rest of the fleet: one
-binary that is both the human CLI and the agent MCP server (stdio),
-headless-first, `run.json` + report artifacts. Tech triage pending (likely a
-Rust ArtCraft 3-tier workspace in the shape of `djcraft`/`speechcraft`; a
-Python FastMCP pilot is acceptable the way the six workstation crafts did it).
+```powershell
+# Run all merge gates (tests, clippy -D warnings, fmt --check)
+just gates
 
-## Lineage — the Storytold craft-app pattern
+# Run headless smoke verification on both CLI/MCP and desktop app
+just smoke
 
-Storytold ArtCraft ([storytold/artcraft](https://github.com/storytold/artcraft) — "the IDE for artists") was the starting point. The 16 craft apps in the Storytold stable each ship one binary that is both the human CLI and the agent MCP server (stdio), headless-first, with `run.json` + report artifacts. That modus operandi and harness is what this repo will implement; the code here is independent, the pattern is shared.
+# Launch the desktop workstation
+just app
+
+# Run the MCP stdio server
+just mcp
+
+# CLI examples
+cargo run -p musiccraft-mcp -- commands --json
+cargo run -p musiccraft-mcp -- vocal synth --line "aa ee oo ah" --voice OPERA --out vocal.wav --json
+cargo run -p musiccraft-mcp -- mix render --out mix.wav --json
+cargo run -p musiccraft-mcp -- export stems --out-dir ./handoff --json
+```
+
+## Studio-to-Stage Boundary (Normative)
+
+`djcraft` is the stage; `musiccraft` is the studio. MusicCraft arranges, synthesizes vocals, splits stems, renders mixes, and exports a `handoff.json` package for `djcraft`. Live 4-deck mixing and Camelot performance stay in `djcraft`.
