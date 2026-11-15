@@ -1711,6 +1711,10 @@ impl MusicCraftApp {
                             for (k, a) in [
                                 ("Space", "Play / Pause Transport"),
                                 ("Home", "Rewind to Bar 1"),
+                                ("Ctrl+D", "Duplicate Selected Region"),
+                                ("S", "Split Selected Region at Playhead"),
+                                ("Del / Backspace", "Delete Selected Region"),
+                                ("M", "Add Timeline Marker at Playhead"),
                                 ("Ctrl+Shift+P / Ctrl+K", "Open Command Palette"),
                                 ("F1 / Ctrl+/", "Keyboard Shortcuts"),
                                 ("Ctrl+Z / Ctrl+Y", "Undo / Redo"),
@@ -1746,31 +1750,31 @@ impl MusicCraftApp {
                             HelpTab::GetStarted => {
                                 ui.heading("Get Started in 5 Steps");
                                 ui.add_space(4.0);
-                                ui.label("1. Explore the pre-loaded 'Vienna Aria (Demo)' project (120 BPM, C major, Camelot 8B).");
-                                ui.label("2. Create your own song via File > New... (Ctrl+N) or CLI: musiccraft-mcp project new.");
-                                ui.label("3. Add MIDI, Audio, or Vocal tracks from the Insert menu or left Studio Toolbox.");
-                                ui.label("4. Enter vowel phonemes (e.g. 'aa ee oo ah') in the Vocal Inspector and click Synthesize Vocal.");
+                                ui.label("1. Press Space (or click Play) to audition the pre-loaded 'Vienna Aria (Demo)' via real-time cpal audio.");
+                                ui.label("2. Drag regions in the Timeline to move them, drag their right edge to resize, or Import Audio File (.wav) from Insert.");
+                                ui.label("3. Double-click any MIDI region to open the Piano Roll (left-click draws notes, right-click erases).");
+                                ui.label("4. Shape your mix in the right Track FX Rack (+EQ, +Comp, +Delay, +Rev) and Vocal Inspector (OPERA..SYNTH).");
                                 ui.label("5. Click Render Mix for a mastered -14 LUFS stereo WAV, or Export to DJCraft for stems + handoff.json.");
                             }
                             HelpTab::Functions => {
                                 ui.heading("Core Studio Functions");
                                 ui.add_space(4.0);
-                                ui.strong("Multi-Track Arrangement (.mcraft)");
-                                ui.label("JSON project AST with Audio, MIDI, Vocal, and Stem tracks, beat-indexed regions, and 32-step undo/redo.");
+                                ui.strong("Real-Time Transport & Multi-Track Timeline (.mcraft)");
+                                ui.label("Live cpal stereo playback with Play/Pause/Stop/Rewind, Loop, Click metronome, Snap-to-Grid, markers (M), and WAV waveforms.");
+                                ui.add_space(4.0);
+                                ui.strong("MIDI Piano Roll & Track DSP FX Rack");
+                                ui.label("Interactive C3-C5 note editor plus per-track 3-Band EQ, RMS Compressor, Stereo Delay, and Schroeder Reverb.");
                                 ui.add_space(4.0);
                                 ui.strong("Virtual Vocal Synthesizer");
                                 ui.label("Formant-filtered harmonic glottal synth with vibrato LFO across 5 voices: OPERA, SOPRANO, TENOR, CHOIR, SYNTH.");
                                 ui.add_space(4.0);
-                                ui.strong("4-Band Stem Separator");
-                                ui.label("Splits any 16-bit PCM WAV into vocals.wav, drums.wav, bass.wav, and other.wav with RMS/peak telemetry.");
-                                ui.add_space(4.0);
-                                ui.strong("Offline Mix Renderer & DJCraft Handoff");
-                                ui.label("Equal-power stereo panning, soft-clip tanh limiting, LUFS normalization, and handoff.json export.");
+                                ui.strong("4-Band Stem Separator & DJCraft Handoff");
+                                ui.label("Splits WAV mixes into vocals/drums/bass/other with LUFS telemetry and exports handoff.json for djcraft.");
                             }
                             HelpTab::Usage => {
-                                ui.heading("GUI, CLI & MCP Usage");
+                                ui.heading("GUI, CLI & MCP Usage (25 Tools)");
                                 ui.add_space(4.0);
-                                ui.label("Window: Use the 8-menu bar (File..Help), Ctrl+K Command Palette, and Timeline / Piano Roll / Stems tabs.");
+                                ui.label("Window: 8-menu bar (File..Help), Transport + Snap/Click toolbar, Ctrl+K Command Palette, and Timeline / Piano Roll / Stems tabs.");
                                 ui.separator();
                                 ui.strong("CLI Examples (every verb supports --json):");
                                 ui.monospace("musiccraft-mcp commands --json");
@@ -1785,11 +1789,11 @@ impl MusicCraftApp {
                             HelpTab::TipsAndTricks => {
                                 ui.heading("Tips & Tricks");
                                 ui.add_space(4.0);
-                                ui.label("- Vowel Formants: 'ee' boosts upper brightness (~2.25 kHz); 'oo'/'oh' give warm operatic phrasing; 'aa' opens chest resonance.");
+                                ui.label("- Timeline Editing: Drag region body to move, drag right edge to resize, Ctrl+D duplicates, S splits at playhead, Del deletes.");
+                                ui.label("- Piano Roll: Set Snap (Off, 1/4, 1/2, 1B, Bar) in the toolbar before drawing notes; right-click any note to erase.");
+                                ui.label("- Vowel Formants: 'ee' boosts brightness (~2.25 kHz); 'oo'/'oh' give warm operatic phrasing; 'aa' opens chest resonance.");
                                 ui.label("- Camelot Key Matching: Check the Camelot code in the top bar (e.g. 8B) and match adjacent keys before exporting to djcraft.");
                                 ui.label("- Gain Staging: Keep track faders around -6 dB to -1 dB so the -14.0 LUFS master normalizer stays transparent.");
-                                ui.label("- Non-Destructive Batching: Omit --save in 'musiccraft-mcp run' to dry-run edits against the demo project.");
-                                ui.label("- Fast Navigation: Ctrl+K opens Command Palette, F1 opens Shortcuts, Ctrl+=/Ctrl+- zooms the beat grid.");
                             }
                             HelpTab::OtherCrafts => {
                                 ui.heading("Other Storytold Craft Apps");
