@@ -58,6 +58,64 @@ pub struct Region {
     pub notes: Vec<MidiNote>,
     pub audio_ref: Option<String>,
     pub gain_db: f32,
+    #[serde(default)]
+    pub waveform_peaks: Vec<f32>,
+}
+
+/// Per-track DSP effect plugin (REAPER-style channel FX rack).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TrackFx {
+    Eq3Band {
+        enabled: bool,
+        low_db: f32,
+        mid_db: f32,
+        high_db: f32,
+    },
+    Compressor {
+        enabled: bool,
+        threshold_db: f32,
+        ratio: f32,
+    },
+    Delay {
+        enabled: bool,
+        time_beats: f32,
+        feedback: f32,
+        mix: f32,
+    },
+    Reverb {
+        enabled: bool,
+        room_size: f32,
+        mix: f32,
+    },
+}
+
+impl TrackFx {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Eq3Band { .. } => "3-Band EQ",
+            Self::Compressor { .. } => "Compressor",
+            Self::Delay { .. } => "Stereo Delay",
+            Self::Reverb { .. } => "Hall Reverb",
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        match self {
+            Self::Eq3Band { enabled, .. }
+            | Self::Compressor { enabled, .. }
+            | Self::Delay { enabled, .. }
+            | Self::Reverb { enabled, .. } => *enabled,
+        }
+    }
+}
+
+/// Named timeline marker (Intro, Verse, Chorus, Drop, etc.).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Marker {
+    pub id: String,
+    pub name: String,
+    pub beat: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,6 +128,8 @@ pub struct Track {
     pub muted: bool,
     pub solo: bool,
     pub regions: Vec<Region>,
+    #[serde(default)]
+    pub fx: Vec<TrackFx>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +254,18 @@ pub struct SongProject {
     pub vocal_line: Option<VocalLine>,
     pub stems: Vec<StemAsset>,
     pub mix: MixRecipe,
+    #[serde(default)]
+    pub markers: Vec<Marker>,
+    #[serde(default)]
+    pub loop_start_beat: f64,
+    #[serde(default = "default_loop_end")]
+    pub loop_end_beat: f64,
+    #[serde(default)]
+    pub metronome_enabled: bool,
+}
+
+fn default_loop_end() -> f64 {
+    16.0
 }
 
 impl SongProject {
@@ -218,6 +290,10 @@ impl SongProject {
             vocal_line: None,
             stems: Vec::new(),
             mix: MixRecipe::default(),
+            markers: Vec::new(),
+            loop_start_beat: 0.0,
+            loop_end_beat: 16.0,
+            metronome_enabled: false,
         })
     }
 
@@ -235,6 +311,21 @@ impl SongProject {
             vocal_line: None,
             stems: Vec::new(),
             mix: MixRecipe::default(),
+            markers: vec![
+                Marker {
+                    id: "mkr-intro".to_string(),
+                    name: "Intro".to_string(),
+                    beat: 0.0,
+                },
+                Marker {
+                    id: "mkr-aria".to_string(),
+                    name: "Aria Hook".to_string(),
+                    beat: 8.0,
+                },
+            ],
+            loop_start_beat: 0.0,
+            loop_end_beat: 16.0,
+            metronome_enabled: false,
         };
 
         proj.tracks.push(Track {
@@ -326,6 +417,13 @@ impl SongProject {
                 ],
                 audio_ref: None,
                 gain_db: 0.0,
+                waveform_peaks: Vec::new(),
+            }],
+            fx: vec![TrackFx::Eq3Band {
+                enabled: true,
+                low_db: 0.0,
+                mid_db: 1.0,
+                high_db: 1.5,
             }],
         });
 
@@ -370,6 +468,13 @@ impl SongProject {
                 ],
                 audio_ref: None,
                 gain_db: 0.0,
+                waveform_peaks: Vec::new(),
+            }],
+            fx: vec![TrackFx::Eq3Band {
+                enabled: true,
+                low_db: 0.0,
+                mid_db: 1.0,
+                high_db: 1.5,
             }],
         });
 
@@ -389,6 +494,13 @@ impl SongProject {
                 notes: Vec::new(),
                 audio_ref: None,
                 gain_db: 0.0,
+                waveform_peaks: Vec::new(),
+            }],
+            fx: vec![TrackFx::Eq3Band {
+                enabled: true,
+                low_db: 0.0,
+                mid_db: 1.0,
+                high_db: 1.5,
             }],
         });
 
@@ -439,6 +551,7 @@ impl SongProject {
             muted: false,
             solo: false,
             regions: Vec::new(),
+            fx: Vec::new(),
         });
         self.tracks
             .last()
@@ -584,6 +697,7 @@ impl SongProject {
                     notes: right_notes,
                     audio_ref: region.audio_ref.clone(),
                     gain_db: region.gain_db,
+                    waveform_peaks: Vec::new(),
                 };
 
                 let left_region = &mut track.regions[pos];
@@ -619,6 +733,125 @@ impl SongProject {
 
     pub fn total_seconds(&self) -> f64 {
         (self.total_beats() * 60.0) / self.bpm
+    }
+
+    pub fn move_region(&mut self, region_id: &str, new_start_beat: f64) -> Result<()> {
+        if !new_start_beat.is_finite() || new_start_beat < 0.0 {
+            return Err(MusicCraftError::InvalidInput(
+                "new_start_beat must be finite and >= 0.0".into(),
+            ));
+        }
+        for track in &mut self.tracks {
+            if let Some(reg) = track.regions.iter_mut().find(|r| r.id == region_id) {
+                reg.start_beat = new_start_beat;
+                return Ok(());
+            }
+        }
+        Err(MusicCraftError::RegionNotFound(region_id.to_string()))
+    }
+
+    pub fn resize_region(&mut self, region_id: &str, new_length_beats: f64) -> Result<()> {
+        if !new_length_beats.is_finite() || new_length_beats < 0.25 {
+            return Err(MusicCraftError::InvalidInput(
+                "new_length_beats must be >= 0.25".into(),
+            ));
+        }
+        for track in &mut self.tracks {
+            if let Some(reg) = track.regions.iter_mut().find(|r| r.id == region_id) {
+                reg.length_beats = new_length_beats;
+                return Ok(());
+            }
+        }
+        Err(MusicCraftError::RegionNotFound(region_id.to_string()))
+    }
+
+    pub fn duplicate_region(&mut self, region_id: &str) -> Result<Region> {
+        for track in &mut self.tracks {
+            if let Some(reg) = track.regions.iter().find(|r| r.id == region_id).cloned() {
+                let mut copy = reg;
+                copy.id = format!(
+                    "reg-{}",
+                    Uuid::new_v4()
+                        .to_string()
+                        .split('-')
+                        .next()
+                        .unwrap_or("dup")
+                );
+                copy.name = format!("{} (Copy)", copy.name);
+                copy.start_beat += copy.length_beats;
+                track.regions.push(copy.clone());
+                return Ok(copy);
+            }
+        }
+        Err(MusicCraftError::RegionNotFound(region_id.to_string()))
+    }
+
+    pub fn delete_region(&mut self, region_id: &str) -> Result<()> {
+        for track in &mut self.tracks {
+            if let Some(pos) = track.regions.iter().position(|r| r.id == region_id) {
+                track.regions.remove(pos);
+                return Ok(());
+            }
+        }
+        Err(MusicCraftError::RegionNotFound(region_id.to_string()))
+    }
+
+    pub fn add_midi_note(&mut self, region_id: &str, note: MidiNote) -> Result<()> {
+        for track in &mut self.tracks {
+            if let Some(reg) = track.regions.iter_mut().find(|r| r.id == region_id) {
+                reg.notes.push(note);
+                return Ok(());
+            }
+        }
+        Err(MusicCraftError::RegionNotFound(region_id.to_string()))
+    }
+
+    pub fn remove_midi_note(
+        &mut self,
+        region_id: &str,
+        pitch: u8,
+        start_beat: f64,
+    ) -> Result<bool> {
+        for track in &mut self.tracks {
+            if let Some(reg) = track.regions.iter_mut().find(|r| r.id == region_id) {
+                let before = reg.notes.len();
+                reg.notes
+                    .retain(|n| !(n.pitch == pitch && (n.start_beat - start_beat).abs() < 0.25));
+                return Ok(reg.notes.len() < before);
+            }
+        }
+        Err(MusicCraftError::RegionNotFound(region_id.to_string()))
+    }
+
+    pub fn add_marker(&mut self, name: &str, beat: f64) -> Result<Marker> {
+        validate_non_empty_bounded("marker name", name, 64)?;
+        if !beat.is_finite() || beat < 0.0 {
+            return Err(MusicCraftError::InvalidInput("beat must be >= 0".into()));
+        }
+        let m = Marker {
+            id: format!(
+                "mkr-{}",
+                Uuid::new_v4()
+                    .to_string()
+                    .split('-')
+                    .next()
+                    .unwrap_or("000")
+            ),
+            name: name.trim().to_string(),
+            beat,
+        };
+        self.markers.push(m.clone());
+        Ok(m)
+    }
+
+    pub fn add_track_fx(&mut self, track_id: &str, fx: TrackFx) -> Result<()> {
+        let track = self
+            .tracks
+            .iter_mut()
+            .find(|t| t.id == track_id || t.name.eq_ignore_ascii_case(track_id))
+            .ok_or_else(|| MusicCraftError::TrackNotFound(track_id.to_string()))?;
+        track.fx.push(fx);
+        Ok(())
     }
 }
 

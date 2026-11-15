@@ -15,8 +15,9 @@ mod tofu_guard;
 
 use eframe::egui;
 use musiccraft_core::{
-    command_catalog, dispatch_on_project, key_to_camelot, render_project_stereo_samples, Command,
-    CommandSpec, SongProject, TrackKind, APP_NAME, APP_VERSION,
+    command_catalog, compute_waveform_peaks, dispatch_on_project, key_to_camelot, read_wav_16bit,
+    render_project_with_metronome, Command, CommandSpec, Region, SongProject, TrackFx, TrackKind,
+    APP_NAME, APP_VERSION,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -105,6 +106,7 @@ struct MusicCraftApp {
     player: player::TransportPlayer,
     audio_dirty: bool,
     playhead_beat: f64,
+    snap_beats: f64,
     selected_track_id: Option<String>,
     selected_region_id: Option<String>,
     vocal_line_input: String,
@@ -160,6 +162,7 @@ impl MusicCraftApp {
             player: player::TransportPlayer::new(),
             audio_dirty: true,
             playhead_beat: 0.0,
+            snap_beats: 0.5,
             selected_track_id,
             selected_region_id,
             vocal_line_input,
@@ -202,7 +205,8 @@ impl MusicCraftApp {
             self.last_status = "Transport: Paused".to_string();
         } else {
             if self.audio_dirty {
-                let (sr, _, samples) = render_project_stereo_samples(&self.project);
+                let (sr, _, samples) =
+                    render_project_with_metronome(&self.project, self.project.metronome_enabled);
                 self.player.load_buffer(sr, samples);
                 self.audio_dirty = false;
             }
@@ -303,8 +307,84 @@ impl MusicCraftApp {
         self.last_status = "Panel layout reset".to_string();
     }
 
+    fn snap_beat(&self, beat: f64) -> f64 {
+        if self.snap_beats <= 0.0 {
+            beat.max(0.0)
+        } else {
+            ((beat / self.snap_beats).round() * self.snap_beats).max(0.0)
+        }
+    }
+
+    fn import_audio_wav(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("WAV Audio", &["wav"])
+            .pick_file()
+        {
+            match read_wav_16bit(&path) {
+                Ok(buf) => {
+                    self.push_undo();
+                    let beats_per_sec = self.project.bpm / 60.0;
+                    let frames = buf.samples.len() / usize::from(buf.channels.max(1));
+                    let duration_secs = frames as f64 / f64::from(buf.sample_rate.max(1));
+                    let length_beats = (duration_secs * beats_per_sec).max(1.0);
+                    let peaks = compute_waveform_peaks(&buf.samples, buf.channels, 96);
+                    let file_stem = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Audio Clip")
+                        .to_string();
+
+                    let target_track_id = if let Some(tid) = self.selected_track_id.clone() {
+                        tid
+                    } else {
+                        let res = dispatch_on_project(
+                            &mut self.project,
+                            Command::TrackAdd {
+                                project_path: None,
+                                name: file_stem.clone(),
+                                kind: "audio".to_string(),
+                            },
+                        );
+                        res.get("track")
+                            .and_then(|t| t.get("id"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("trk-audio")
+                            .to_string()
+                    };
+
+                    let reg_id = format!("reg-wav-{}", self.project.tracks.len() + 1);
+                    let region = Region {
+                        id: reg_id.clone(),
+                        name: file_stem,
+                        start_beat: self.snap_beat(self.playhead_beat),
+                        length_beats,
+                        notes: Vec::new(),
+                        audio_ref: Some(path.to_string_lossy().to_string()),
+                        waveform_peaks: peaks,
+                        gain_db: 0.0,
+                    };
+                    if let Err(e) = self.project.add_region(&target_track_id, region) {
+                        self.last_status = format!("Import WAV failed: {e}");
+                    } else {
+                        self.selected_track_id = Some(target_track_id);
+                        self.selected_region_id = Some(reg_id);
+                        self.audio_dirty = true;
+                        self.last_status = format!("Imported WAV: {}", path.display());
+                    }
+                }
+                Err(e) => {
+                    self.last_status = format!("Import WAV error: {e}");
+                }
+            }
+        }
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         let wants_kb = ctx.egui_wants_keyboard_input();
+        let mut dup_sel = false;
+        let mut del_sel = false;
+        let mut split_sel = false;
+        let mut add_mk = false;
         ctx.input(|i| {
             if !wants_kb && i.key_pressed(egui::Key::Space) {
                 self.toggle_play();
@@ -313,6 +393,20 @@ impl MusicCraftApp {
                 self.player.rewind();
                 self.playhead_beat = 0.0;
                 self.last_status = "Transport: Rewound to Bar 1".to_string();
+            }
+            if !wants_kb && i.modifiers.ctrl && i.key_pressed(egui::Key::D) {
+                dup_sel = true;
+            }
+            if !wants_kb
+                && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+            {
+                del_sel = true;
+            }
+            if !wants_kb && i.key_pressed(egui::Key::S) && !i.modifiers.ctrl {
+                split_sel = true;
+            }
+            if !wants_kb && i.key_pressed(egui::Key::M) && !i.modifiers.ctrl {
+                add_mk = true;
             }
             if (i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::P))
                 || (i.modifiers.command && i.key_pressed(egui::Key::K))
@@ -337,6 +431,53 @@ impl MusicCraftApp {
                 self.zoom_px_per_beat = (self.zoom_px_per_beat / 1.15).max(16.0);
             }
         });
+
+        if dup_sel {
+            if let Some(rid) = self.selected_region_id.clone() {
+                self.run_cmd(
+                    "Duplicate Region",
+                    Command::RegionDuplicate {
+                        project_path: None,
+                        region_id: rid,
+                    },
+                );
+            }
+        }
+        if del_sel {
+            if let Some(rid) = self.selected_region_id.clone() {
+                self.run_cmd(
+                    "Delete Region",
+                    Command::RegionDelete {
+                        project_path: None,
+                        region_id: rid,
+                    },
+                );
+                self.selected_region_id = None;
+            }
+        }
+        if split_sel {
+            if let Some(rid) = self.selected_region_id.clone() {
+                self.run_cmd(
+                    "Split Region at Playhead",
+                    Command::RegionSplit {
+                        project_path: None,
+                        region_id: rid,
+                        split_beat: self.playhead_beat,
+                    },
+                );
+            }
+        }
+        if add_mk {
+            let name = format!("Marker {}", self.project.markers.len() + 1);
+            self.run_cmd(
+                "Add Marker",
+                Command::MarkerAdd {
+                    project_path: None,
+                    name,
+                    beat: self.snap_beat(self.playhead_beat),
+                },
+            );
+        }
     }
 
     fn render_menu_bar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
@@ -573,11 +714,27 @@ impl MusicCraftApp {
                                 project_path: None,
                                 track_id: tid,
                                 name: "New Clip".to_string(),
-                                start_beat: 0.0,
+                                start_beat: self.snap_beat(self.playhead_beat),
                                 length_beats: 4.0,
                             },
                         );
                     }
+                    ui.close();
+                }
+                if ui.button("Import Audio File (.wav)...").clicked() {
+                    self.import_audio_wav();
+                    ui.close();
+                }
+                if ui.button("Add Marker at Playhead (M)").clicked() {
+                    let name = format!("Marker {}", self.project.markers.len() + 1);
+                    self.run_cmd(
+                        "Add Marker",
+                        Command::MarkerAdd {
+                            project_path: None,
+                            name,
+                            beat: self.snap_beat(self.playhead_beat),
+                        },
+                    );
                     ui.close();
                 }
             });
@@ -616,6 +773,45 @@ impl MusicCraftApp {
                             include_vocal: true,
                         },
                     );
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Duplicate Selected Region (Ctrl+D)").clicked() {
+                    if let Some(rid) = self.selected_region_id.clone() {
+                        self.run_cmd(
+                            "Duplicate Region",
+                            Command::RegionDuplicate {
+                                project_path: None,
+                                region_id: rid,
+                            },
+                        );
+                    }
+                    ui.close();
+                }
+                if ui.button("Split Selected Region at Playhead (S)").clicked() {
+                    if let Some(rid) = self.selected_region_id.clone() {
+                        self.run_cmd(
+                            "Split Region",
+                            Command::RegionSplit {
+                                project_path: None,
+                                region_id: rid,
+                                split_beat: self.playhead_beat,
+                            },
+                        );
+                    }
+                    ui.close();
+                }
+                if ui.button("Delete Selected Region (Del)").clicked() {
+                    if let Some(rid) = self.selected_region_id.clone() {
+                        self.run_cmd(
+                            "Delete Region",
+                            Command::RegionDelete {
+                                project_path: None,
+                                region_id: rid,
+                            },
+                        );
+                        self.selected_region_id = None;
+                    }
                     ui.close();
                 }
                 if ui.button("Split Selected Region").clicked() {
@@ -782,6 +978,29 @@ impl MusicCraftApp {
             if ui.toggle_value(&mut looping, "Loop").clicked() {
                 self.player.set_looping(looping);
             }
+            if ui
+                .toggle_value(&mut self.project.metronome_enabled, "Click")
+                .on_hover_text("Toggle Metronome Click")
+                .clicked()
+            {
+                self.audio_dirty = true;
+            }
+            egui::ComboBox::from_id_salt("snap_combo")
+                .width(64.0)
+                .selected_text(match self.snap_beats {
+                    x if x <= 0.0 => "Snap: Off",
+                    x if (x - 0.25).abs() < 0.01 => "Snap: 1/4",
+                    x if (x - 0.5).abs() < 0.01 => "Snap: 1/2",
+                    x if (x - 1.0).abs() < 0.01 => "Snap: 1B",
+                    _ => "Snap: Bar",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.snap_beats, 0.0, "Off");
+                    ui.selectable_value(&mut self.snap_beats, 0.25, "1/4 Beat");
+                    ui.selectable_value(&mut self.snap_beats, 0.5, "1/2 Beat");
+                    ui.selectable_value(&mut self.snap_beats, 1.0, "1 Beat");
+                    ui.selectable_value(&mut self.snap_beats, 4.0, "1 Bar");
+                });
             let bar = (self.playhead_beat / 4.0).floor() as i32 + 1;
             let beat_in_bar = (self.playhead_beat % 4.0) + 1.0;
             let secs = (self.playhead_beat * 60.0) / self.project.bpm.max(20.0);
@@ -957,6 +1176,41 @@ impl MusicCraftApp {
             }
             let ph_ruler_x =
                 ruler_rect.left() + header_w + (self.playhead_beat as f32) * px_per_beat;
+            // Loop range highlight bar on ruler
+            let ls = self.project.loop_start_beat;
+            let le = self.project.loop_end_beat;
+            if le > ls {
+                let lx0 = ruler_rect.left() + header_w + (ls as f32) * px_per_beat;
+                let lx1 = ruler_rect.left() + header_w + (le as f32) * px_per_beat;
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(lx0, ruler_rect.bottom() - 4.0),
+                        egui::pos2(lx1, ruler_rect.bottom()),
+                    ),
+                    1.0,
+                    egui::Color32::from_rgb(56, 189, 248),
+                );
+            }
+            // Timeline markers
+            for mk in &self.project.markers {
+                let mx = ruler_rect.left() + header_w + (mk.beat as f32) * px_per_beat;
+                if mx >= ruler_rect.left() + header_w && mx <= ruler_rect.right() {
+                    painter.line_segment(
+                        [
+                            egui::pos2(mx, ruler_rect.top()),
+                            egui::pos2(mx, ruler_rect.bottom()),
+                        ],
+                        egui::Stroke::new(1.5, egui::Color32::from_rgb(244, 114, 182)),
+                    );
+                    painter.text(
+                        egui::pos2(mx + 3.0, ruler_rect.bottom() - 12.0),
+                        egui::Align2::LEFT_TOP,
+                        &mk.name,
+                        egui::FontId::monospace(10.0),
+                        egui::Color32::from_rgb(244, 114, 182),
+                    );
+                }
+            }
             if ph_ruler_x >= ruler_rect.left() + header_w && ph_ruler_x <= ruler_rect.right() {
                 painter.line_segment(
                     [
@@ -969,7 +1223,11 @@ impl MusicCraftApp {
 
             ui.add_space(4.0);
 
-            for trk in &self.project.tracks {
+            let snap = self.snap_beats;
+            let mut open_piano = false;
+            let mut dirty = false;
+
+            for trk in &mut self.project.tracks {
                 let is_sel = self.selected_track_id.as_deref() == Some(&trk.id);
                 let row_res = ui.horizontal(|ui| {
                     // Track header card
@@ -992,10 +1250,11 @@ impl MusicCraftApp {
                                 });
                                 ui.label(
                                     egui::RichText::new(format!(
-                                        "{} | {:.1} dB{}",
+                                        "{} | {:.1} dB{} | FX:{}",
                                         trk.kind.as_str(),
                                         trk.volume_db,
-                                        if trk.muted { " [M]" } else { "" }
+                                        if trk.muted { " [M]" } else { "" },
+                                        trk.fx.len()
                                     ))
                                     .small(),
                                 );
@@ -1005,14 +1264,16 @@ impl MusicCraftApp {
                     // Track lane canvas
                     let (lane_rect, _) =
                         ui.allocate_exact_size(egui::vec2(ruler_w, lane_h), egui::Sense::click());
-                    let p = ui.painter();
-                    p.rect_filled(lane_rect, 3.0, egui::Color32::from_rgb(12, 18, 32));
-                    p.rect_stroke(
-                        lane_rect,
-                        3.0,
-                        egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59)),
-                        egui::StrokeKind::Inside,
-                    );
+                    {
+                        let p = ui.painter();
+                        p.rect_filled(lane_rect, 3.0, egui::Color32::from_rgb(12, 18, 32));
+                        p.rect_stroke(
+                            lane_rect,
+                            3.0,
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(30, 41, 59)),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
 
                     let base_color = match trk.kind {
                         TrackKind::Midi => egui::Color32::from_rgb(37, 99, 235),
@@ -1021,19 +1282,71 @@ impl MusicCraftApp {
                         TrackKind::Stem => egui::Color32::from_rgb(245, 158, 11),
                     };
 
-                    for reg in &trk.regions {
+                    for reg in &mut trk.regions {
                         let rx = lane_rect.left() + (reg.start_beat as f32) * px_per_beat;
                         let rw = ((reg.length_beats as f32) * px_per_beat).max(20.0);
                         let reg_rect = egui::Rect::from_min_size(
                             egui::pos2(rx, lane_rect.top() + 4.0),
                             egui::vec2(rw, lane_h - 8.0),
                         );
+
+                        // Interactive region body (click to select, drag to move, drag right edge to resize)
+                        let reg_resp = ui.interact(
+                            reg_rect,
+                            ui.scope_id().with(("reg", &trk.id, &reg.id)),
+                            egui::Sense::click_and_drag(),
+                        );
+                        if reg_resp.clicked() || reg_resp.drag_started() {
+                            self.selected_track_id = Some(trk.id.clone());
+                            self.selected_region_id = Some(reg.id.clone());
+                        }
+                        if reg_resp.double_clicked() {
+                            self.selected_track_id = Some(trk.id.clone());
+                            self.selected_region_id = Some(reg.id.clone());
+                            open_piano = true;
+                        }
+                        if reg_resp.dragged() {
+                            let delta_beats = f64::from(reg_resp.drag_delta().x / px_per_beat);
+                            let near_right = reg_resp
+                                .interact_pointer_pos()
+                                .map(|pt| (reg_rect.right() - pt.x).abs() <= 12.0)
+                                .unwrap_or(false);
+                            if near_right {
+                                reg.length_beats = (reg.length_beats + delta_beats).max(0.5);
+                            } else {
+                                reg.start_beat = (reg.start_beat + delta_beats).max(0.0);
+                            }
+                            dirty = true;
+                        }
+                        if reg_resp.drag_stopped() && snap > 0.0 {
+                            reg.start_beat = ((reg.start_beat / snap).round() * snap).max(0.0);
+                            reg.length_beats = ((reg.length_beats / snap).round() * snap).max(0.5);
+                            dirty = true;
+                        }
+
+                        let p = ui.painter();
+                        let is_reg_sel = self.selected_region_id.as_deref() == Some(&reg.id);
                         p.rect_filled(reg_rect, 4.0, base_color.linear_multiply(0.35));
                         p.rect_stroke(
                             reg_rect,
                             4.0,
-                            egui::Stroke::new(1.2, base_color),
+                            egui::Stroke::new(
+                                if is_reg_sel { 2.0 } else { 1.2 },
+                                if is_reg_sel {
+                                    egui::Color32::from_rgb(250, 204, 21)
+                                } else {
+                                    base_color
+                                },
+                            ),
                             egui::StrokeKind::Inside,
+                        );
+                        // Resize handle indicator on right edge
+                        p.line_segment(
+                            [
+                                egui::pos2(reg_rect.right() - 3.0, reg_rect.top() + 8.0),
+                                egui::pos2(reg_rect.right() - 3.0, reg_rect.bottom() - 8.0),
+                            ],
+                            egui::Stroke::new(1.5, egui::Color32::from_rgb(203, 213, 225)),
                         );
                         p.text(
                             reg_rect.min + egui::vec2(6.0, 4.0),
@@ -1042,6 +1355,22 @@ impl MusicCraftApp {
                             egui::FontId::proportional(11.5),
                             egui::Color32::WHITE,
                         );
+
+                        // Real waveform peaks inside audio regions
+                        if !reg.waveform_peaks.is_empty() {
+                            let n_peaks = reg.waveform_peaks.len();
+                            let mid_y = reg_rect.center().y + 4.0;
+                            let half_h = (reg_rect.height() - 22.0) * 0.5;
+                            for (idx, &pk) in reg.waveform_peaks.iter().enumerate() {
+                                let t = (idx as f32 + 0.5) / (n_peaks as f32);
+                                let wx = reg_rect.left() + 4.0 + t * (reg_rect.width() - 8.0);
+                                let amp = pk.clamp(0.05, 1.0) * half_h;
+                                p.line_segment(
+                                    [egui::pos2(wx, mid_y - amp), egui::pos2(wx, mid_y + amp)],
+                                    egui::Stroke::new(1.2, egui::Color32::from_rgb(167, 243, 208)),
+                                );
+                            }
+                        }
 
                         // Mini MIDI note bars inside region
                         for n in &reg.notes {
@@ -1059,7 +1388,7 @@ impl MusicCraftApp {
                     // Live moving playhead line across this track lane
                     let ph_x = lane_rect.left() + (self.playhead_beat as f32) * px_per_beat;
                     if ph_x >= lane_rect.left() && ph_x <= lane_rect.right() {
-                        p.line_segment(
+                        ui.painter().line_segment(
                             [
                                 egui::pos2(ph_x, lane_rect.top()),
                                 egui::pos2(ph_x, lane_rect.bottom()),
@@ -1071,10 +1400,183 @@ impl MusicCraftApp {
                 let _ = row_res;
                 ui.add_space(4.0);
             }
+            if open_piano {
+                self.center_tab = CenterTab::PianoAndVocal;
+            }
+            if dirty {
+                self.audio_dirty = true;
+            }
         });
     }
 
     fn render_piano_and_vocal(&mut self, ui: &mut egui::Ui) {
+        ui.heading("MIDI Piano Roll Editor");
+        ui.label("Left-click grid to draw note | Right-click note to erase (Snap active)");
+        ui.add_space(4.0);
+
+        let sel_reg_id = self.selected_region_id.clone().or_else(|| {
+            self.project
+                .tracks
+                .first()
+                .and_then(|t| t.regions.first())
+                .map(|r| r.id.clone())
+        });
+
+        let mut add_note: Option<(String, u8, f64)> = None;
+        let mut rem_note: Option<(String, u8, f64)> = None;
+
+        if let Some(ref rid) = sel_reg_id {
+            let found_reg = self
+                .project
+                .tracks
+                .iter()
+                .flat_map(|t| t.regions.iter())
+                .find(|r| &r.id == rid)
+                .cloned();
+            if let Some(reg) = found_reg {
+                ui.label(format!(
+                    "Editing Region: {} ({:.1} beats, {} notes)",
+                    reg.name,
+                    reg.length_beats,
+                    reg.notes.len()
+                ));
+                let low_pitch: u8 = 48; // C3
+                let high_pitch: u8 = 72; // C5
+                let num_rows = usize::from(high_pitch - low_pitch + 1);
+                let row_h = 10.0_f32;
+                let key_w = 38.0_f32;
+                let total_h = (num_rows as f32) * row_h;
+                let grid_beats = reg.length_beats.max(8.0) as f32;
+                let px_per_beat = self.zoom_px_per_beat.max(40.0);
+
+                egui::ScrollArea::horizontal().show(ui, |ui| {
+                    let (roll_rect, roll_resp) = ui.allocate_exact_size(
+                        egui::vec2(key_w + grid_beats * px_per_beat, total_h),
+                        egui::Sense::click(),
+                    );
+                    let p = ui.painter();
+                    p.rect_filled(roll_rect, 3.0, egui::Color32::from_rgb(12, 18, 32));
+
+                    // Piano keys on left + horizontal pitch lanes
+                    for idx in 0..num_rows {
+                        let pitch = high_pitch - (idx as u8);
+                        let y = roll_rect.top() + (idx as f32) * row_h;
+                        let is_black = matches!(pitch % 12, 1 | 3 | 6 | 8 | 10);
+                        let key_rect = egui::Rect::from_min_size(
+                            egui::pos2(roll_rect.left(), y),
+                            egui::vec2(key_w, row_h),
+                        );
+                        p.rect_filled(
+                            key_rect,
+                            0.0,
+                            if is_black {
+                                egui::Color32::from_rgb(30, 41, 59)
+                            } else {
+                                egui::Color32::from_rgb(226, 232, 240)
+                            },
+                        );
+                        if pitch.is_multiple_of(12) {
+                            p.text(
+                                key_rect.left_center() + egui::vec2(3.0, 0.0),
+                                egui::Align2::LEFT_CENTER,
+                                format!("C{}", (pitch / 12).saturating_sub(1)),
+                                egui::FontId::monospace(8.5),
+                                egui::Color32::from_rgb(15, 23, 42),
+                            );
+                        }
+                        p.line_segment(
+                            [
+                                egui::pos2(roll_rect.left() + key_w, y),
+                                egui::pos2(roll_rect.right(), y),
+                            ],
+                            egui::Stroke::new(0.5, egui::Color32::from_rgb(30, 41, 59)),
+                        );
+                    }
+
+                    // Beat grid lines
+                    for b in 0..=(grid_beats.ceil() as i32) {
+                        let bx = roll_rect.left() + key_w + (b as f32) * px_per_beat;
+                        p.line_segment(
+                            [
+                                egui::pos2(bx, roll_rect.top()),
+                                egui::pos2(bx, roll_rect.bottom()),
+                            ],
+                            egui::Stroke::new(
+                                if b % 4 == 0 { 1.0 } else { 0.5 },
+                                egui::Color32::from_rgb(51, 65, 85),
+                            ),
+                        );
+                    }
+
+                    // Draw MIDI notes
+                    for n in &reg.notes {
+                        if n.pitch >= low_pitch && n.pitch <= high_pitch {
+                            let row = usize::from(high_pitch - n.pitch);
+                            let nx = roll_rect.left() + key_w + (n.start_beat as f32) * px_per_beat;
+                            let nw = ((n.duration_beats as f32) * px_per_beat).max(6.0);
+                            let ny = roll_rect.top() + (row as f32) * row_h + 1.0;
+                            let note_rect = egui::Rect::from_min_size(
+                                egui::pos2(nx, ny),
+                                egui::vec2(nw, row_h - 2.0),
+                            );
+                            p.rect_filled(note_rect, 2.0, egui::Color32::from_rgb(56, 189, 248));
+                        }
+                    }
+
+                    if let Some(pos) = roll_resp.interact_pointer_pos() {
+                        if pos.x > roll_rect.left() + key_w {
+                            let row = ((pos.y - roll_rect.top()) / row_h)
+                                .floor()
+                                .clamp(0.0, (num_rows - 1) as f32)
+                                as u8;
+                            let pitch = high_pitch.saturating_sub(row);
+                            let raw_beat =
+                                f64::from((pos.x - (roll_rect.left() + key_w)) / px_per_beat);
+                            let snapped = self.snap_beat(raw_beat);
+                            if roll_resp.clicked() {
+                                add_note = Some((rid.clone(), pitch, snapped));
+                            } else if roll_resp.secondary_clicked() {
+                                rem_note = Some((rid.clone(), pitch, raw_beat));
+                            }
+                        }
+                    }
+                });
+            }
+        } else {
+            ui.label("Select a MIDI region in the Timeline to edit notes.");
+        }
+
+        if let Some((rid, pitch, beat)) = add_note {
+            let dur = if self.snap_beats > 0.0 {
+                self.snap_beats
+            } else {
+                0.5
+            };
+            self.run_cmd(
+                "Add MIDI Note",
+                Command::NoteAdd {
+                    project_path: None,
+                    region_id: rid,
+                    pitch,
+                    start_beat: beat,
+                    duration_beats: dur,
+                    velocity: Some(100),
+                },
+            );
+        }
+        if let Some((rid, pitch, beat)) = rem_note {
+            self.run_cmd(
+                "Remove MIDI Note",
+                Command::NoteRemove {
+                    project_path: None,
+                    region_id: rid,
+                    pitch,
+                    start_beat: beat,
+                },
+            );
+        }
+
+        ui.separator();
         ui.heading("Vocal Phoneme & Pitch Curve Editor");
         ui.add_space(6.0);
         if let Some(vocal) = &self.project.vocal_line {
@@ -1473,6 +1975,122 @@ impl eframe::App for MusicCraftApp {
                             .unwrap_or_else(|| "Not rendered".to_string());
                         ui.label(format!("Integrated: {lufs}"));
                         ui.label(format!("Target: {:.1} LUFS", self.project.mix.target_lufs));
+                    }
+
+                    ui.separator();
+                    ui.heading("Track FX Rack");
+                    if let Some(tid) = self.selected_track_id.clone() {
+                        ui.horizontal_wrapped(|ui| {
+                            for (lbl, kind) in [
+                                ("+EQ", "eq"),
+                                ("+Comp", "compressor"),
+                                ("+Delay", "delay"),
+                                ("+Rev", "reverb"),
+                            ] {
+                                if ui.small_button(lbl).clicked() {
+                                    self.run_cmd(
+                                        "Add Track FX",
+                                        Command::TrackAddFx {
+                                            project_path: None,
+                                            track_id: tid.clone(),
+                                            fx_kind: kind.to_string(),
+                                        },
+                                    );
+                                }
+                            }
+                        });
+
+                        let mut remove_idx: Option<usize> = None;
+                        let mut fx_dirty = false;
+                        if let Some(trk) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+                            for (idx, fx) in trk.fx.iter_mut().enumerate() {
+                                ui.horizontal(|ui| {
+                                    match fx {
+                                        TrackFx::Eq3Band {
+                                            enabled,
+                                            low_db,
+                                            high_db,
+                                            ..
+                                        } => {
+                                            fx_dirty |= ui.checkbox(enabled, "EQ3").changed();
+                                            fx_dirty |= ui
+                                                .add(
+                                                    egui::Slider::new(low_db, -12.0..=12.0)
+                                                        .text("L"),
+                                                )
+                                                .changed();
+                                            fx_dirty |= ui
+                                                .add(
+                                                    egui::Slider::new(high_db, -12.0..=12.0)
+                                                        .text("H"),
+                                                )
+                                                .changed();
+                                        }
+                                        TrackFx::Compressor {
+                                            enabled,
+                                            threshold_db,
+                                            ratio,
+                                        } => {
+                                            fx_dirty |= ui.checkbox(enabled, "Comp").changed();
+                                            fx_dirty |= ui
+                                                .add(
+                                                    egui::Slider::new(threshold_db, -36.0..=0.0)
+                                                        .text("Thr"),
+                                                )
+                                                .changed();
+                                            fx_dirty |= ui
+                                                .add(egui::Slider::new(ratio, 1.0..=10.0).text("R"))
+                                                .changed();
+                                        }
+                                        TrackFx::Delay {
+                                            enabled,
+                                            time_beats,
+                                            mix,
+                                            ..
+                                        } => {
+                                            fx_dirty |= ui.checkbox(enabled, "Dly").changed();
+                                            fx_dirty |= ui
+                                                .add(
+                                                    egui::Slider::new(time_beats, 0.125..=2.0)
+                                                        .text("B"),
+                                                )
+                                                .changed();
+                                            fx_dirty |= ui
+                                                .add(egui::Slider::new(mix, 0.0..=1.0).text("Mix"))
+                                                .changed();
+                                        }
+                                        TrackFx::Reverb {
+                                            enabled,
+                                            room_size,
+                                            mix,
+                                        } => {
+                                            fx_dirty |= ui.checkbox(enabled, "Rev").changed();
+                                            fx_dirty |= ui
+                                                .add(
+                                                    egui::Slider::new(room_size, 0.1..=1.0)
+                                                        .text("Rm"),
+                                                )
+                                                .changed();
+                                            fx_dirty |= ui
+                                                .add(egui::Slider::new(mix, 0.0..=1.0).text("Mix"))
+                                                .changed();
+                                        }
+                                    }
+                                    if ui.small_button("X").clicked() {
+                                        remove_idx = Some(idx);
+                                    }
+                                });
+                            }
+                            if let Some(ri) = remove_idx {
+                                trk.fx.remove(ri);
+                                fx_dirty = true;
+                            }
+                        }
+                        if fx_dirty {
+                            self.audio_dirty = true;
+                        }
+                    } else {
+                        ui.label("Select a track to edit FX.");
                     }
 
                     ui.separator();

@@ -3,8 +3,8 @@ use crate::audio::{
 };
 use crate::error::{validate_non_empty_bounded, MusicCraftError, Result};
 use crate::project::{
-    build_pitch_curve, parse_phoneme_line, MidiNote, Region, SongProject, TrackKind, VocalLine,
-    VocalVoice, DEFAULT_SAMPLE_RATE,
+    build_pitch_curve, parse_phoneme_line, MidiNote, Region, SongProject, TrackFx, TrackKind,
+    VocalLine, VocalVoice, DEFAULT_SAMPLE_RATE,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -70,6 +70,48 @@ pub enum Command {
         project_path: Option<String>,
         region_id: String,
         split_beat: f64,
+    },
+    RegionMove {
+        project_path: Option<String>,
+        region_id: String,
+        new_start_beat: f64,
+    },
+    RegionResize {
+        project_path: Option<String>,
+        region_id: String,
+        new_length_beats: f64,
+    },
+    RegionDuplicate {
+        project_path: Option<String>,
+        region_id: String,
+    },
+    RegionDelete {
+        project_path: Option<String>,
+        region_id: String,
+    },
+    NoteAdd {
+        project_path: Option<String>,
+        region_id: String,
+        pitch: u8,
+        start_beat: f64,
+        duration_beats: f64,
+        velocity: Option<u8>,
+    },
+    NoteRemove {
+        project_path: Option<String>,
+        region_id: String,
+        pitch: u8,
+        start_beat: f64,
+    },
+    MarkerAdd {
+        project_path: Option<String>,
+        name: String,
+        beat: f64,
+    },
+    TrackAddFx {
+        project_path: Option<String>,
+        track_id: String,
+        fx_kind: String,
     },
     ModifyQuantize {
         project_path: Option<String>,
@@ -249,7 +291,7 @@ pub fn command_catalog() -> Vec<CommandSpec> {
             mcp_name: "musiccraft_region_split",
             label: "Split Region",
             menu: "Modify",
-            shortcut: None,
+            shortcut: Some("S"),
             description: "Split a timeline region into two regions at split_beat.",
             params_schema: json!({
                 "type": "object",
@@ -259,6 +301,144 @@ pub fn command_catalog() -> Vec<CommandSpec> {
                     "split_beat": { "type": "number" }
                 },
                 "required": ["region_id", "split_beat"]
+            }),
+        },
+        CommandSpec {
+            id: "region.move",
+            mcp_name: "musiccraft_region_move",
+            label: "Move Region",
+            menu: "Modify",
+            shortcut: None,
+            description: "Move a timeline region to a new start beat.",
+            params_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_path": { "type": "string" },
+                    "region_id": { "type": "string" },
+                    "new_start_beat": { "type": "number" }
+                },
+                "required": ["region_id", "new_start_beat"]
+            }),
+        },
+        CommandSpec {
+            id: "region.resize",
+            mcp_name: "musiccraft_region_resize",
+            label: "Resize Region",
+            menu: "Modify",
+            shortcut: None,
+            description: "Resize a timeline region length in beats.",
+            params_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_path": { "type": "string" },
+                    "region_id": { "type": "string" },
+                    "new_length_beats": { "type": "number" }
+                },
+                "required": ["region_id", "new_length_beats"]
+            }),
+        },
+        CommandSpec {
+            id: "region.duplicate",
+            mcp_name: "musiccraft_region_duplicate",
+            label: "Duplicate Region",
+            menu: "Modify",
+            shortcut: Some("Ctrl+D"),
+            description: "Duplicate a timeline region immediately after its end beat.",
+            params_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_path": { "type": "string" },
+                    "region_id": { "type": "string" }
+                },
+                "required": ["region_id"]
+            }),
+        },
+        CommandSpec {
+            id: "region.delete",
+            mcp_name: "musiccraft_region_delete",
+            label: "Delete Region",
+            menu: "Modify",
+            shortcut: Some("Del"),
+            description: "Delete a region from the arrangement.",
+            params_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_path": { "type": "string" },
+                    "region_id": { "type": "string" }
+                },
+                "required": ["region_id"]
+            }),
+        },
+        CommandSpec {
+            id: "note.add",
+            mcp_name: "musiccraft_note_add",
+            label: "Add MIDI Note",
+            menu: "Insert",
+            shortcut: None,
+            description: "Add a MIDI note to a region in the piano roll.",
+            params_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_path": { "type": "string" },
+                    "region_id": { "type": "string" },
+                    "pitch": { "type": "integer" },
+                    "start_beat": { "type": "number" },
+                    "duration_beats": { "type": "number" },
+                    "velocity": { "type": "integer" }
+                },
+                "required": ["region_id", "pitch", "start_beat"]
+            }),
+        },
+        CommandSpec {
+            id: "note.remove",
+            mcp_name: "musiccraft_note_remove",
+            label: "Remove MIDI Note",
+            menu: "Modify",
+            shortcut: None,
+            description: "Remove a MIDI note from a region by pitch and start beat.",
+            params_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_path": { "type": "string" },
+                    "region_id": { "type": "string" },
+                    "pitch": { "type": "integer" },
+                    "start_beat": { "type": "number" }
+                },
+                "required": ["region_id", "pitch", "start_beat"]
+            }),
+        },
+        CommandSpec {
+            id: "marker.add",
+            mcp_name: "musiccraft_marker_add",
+            label: "Add Timeline Marker",
+            menu: "Insert",
+            shortcut: Some("M"),
+            description: "Add a named timeline marker at a beat position.",
+            params_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_path": { "type": "string" },
+                    "name": { "type": "string" },
+                    "beat": { "type": "number" }
+                },
+                "required": ["name", "beat"]
+            }),
+        },
+        CommandSpec {
+            id: "track.add_fx",
+            mcp_name: "musiccraft_track_add_fx",
+            label: "Add Track FX",
+            menu: "Insert",
+            shortcut: None,
+            description: "Append a DSP effect (eq, compressor, delay, reverb) to a track FX rack.",
+            params_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_path": { "type": "string" },
+                    "track_id": { "type": "string" },
+                    "fx_kind": { "type": "string", "enum": ["eq", "compressor", "delay", "reverb"] }
+                },
+                "required": ["track_id", "fx_kind"]
             }),
         },
         CommandSpec {
@@ -459,6 +639,98 @@ impl Command {
                     .ok_or_else(|| {
                         MusicCraftError::InvalidInput("missing number param 'split_beat'".into())
                     })?,
+            }),
+            "region.move" | "musiccraft_region_move" | "region_move" => Ok(Self::RegionMove {
+                project_path: str_opt("project_path"),
+                region_id: str_req("region_id")?,
+                new_start_beat: params
+                    .get("new_start_beat")
+                    .and_then(|v| v.as_f64())
+                    .ok_or_else(|| {
+                        MusicCraftError::InvalidInput(
+                            "missing number param 'new_start_beat'".into(),
+                        )
+                    })?,
+            }),
+            "region.resize" | "musiccraft_region_resize" | "region_resize" => {
+                Ok(Self::RegionResize {
+                    project_path: str_opt("project_path"),
+                    region_id: str_req("region_id")?,
+                    new_length_beats: params
+                        .get("new_length_beats")
+                        .and_then(|v| v.as_f64())
+                        .ok_or_else(|| {
+                            MusicCraftError::InvalidInput(
+                                "missing number param 'new_length_beats'".into(),
+                            )
+                        })?,
+                })
+            }
+            "region.duplicate" | "musiccraft_region_duplicate" | "region_duplicate" => {
+                Ok(Self::RegionDuplicate {
+                    project_path: str_opt("project_path"),
+                    region_id: str_req("region_id")?,
+                })
+            }
+            "region.delete" | "musiccraft_region_delete" | "region_delete" => {
+                Ok(Self::RegionDelete {
+                    project_path: str_opt("project_path"),
+                    region_id: str_req("region_id")?,
+                })
+            }
+            "note.add" | "musiccraft_note_add" | "note_add" => Ok(Self::NoteAdd {
+                project_path: str_opt("project_path"),
+                region_id: str_req("region_id")?,
+                pitch: params
+                    .get("pitch")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| u8::try_from(v).ok())
+                    .ok_or_else(|| {
+                        MusicCraftError::InvalidInput("missing u8 param 'pitch'".into())
+                    })?,
+                start_beat: params
+                    .get("start_beat")
+                    .and_then(|v| v.as_f64())
+                    .ok_or_else(|| {
+                        MusicCraftError::InvalidInput("missing number param 'start_beat'".into())
+                    })?,
+                duration_beats: params
+                    .get("duration_beats")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.5),
+                velocity: params
+                    .get("velocity")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| u8::try_from(v).ok()),
+            }),
+            "note.remove" | "musiccraft_note_remove" | "note_remove" => Ok(Self::NoteRemove {
+                project_path: str_opt("project_path"),
+                region_id: str_req("region_id")?,
+                pitch: params
+                    .get("pitch")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| u8::try_from(v).ok())
+                    .ok_or_else(|| {
+                        MusicCraftError::InvalidInput("missing u8 param 'pitch'".into())
+                    })?,
+                start_beat: params
+                    .get("start_beat")
+                    .and_then(|v| v.as_f64())
+                    .ok_or_else(|| {
+                        MusicCraftError::InvalidInput("missing number param 'start_beat'".into())
+                    })?,
+            }),
+            "marker.add" | "musiccraft_marker_add" | "marker_add" => Ok(Self::MarkerAdd {
+                project_path: str_opt("project_path"),
+                name: str_req("name")?,
+                beat: params.get("beat").and_then(|v| v.as_f64()).ok_or_else(|| {
+                    MusicCraftError::InvalidInput("missing number param 'beat'".into())
+                })?,
+            }),
+            "track.add_fx" | "musiccraft_track_add_fx" | "track_add_fx" => Ok(Self::TrackAddFx {
+                project_path: str_opt("project_path"),
+                track_id: str_req("track_id")?,
+                fx_kind: str_req("fx_kind")?,
             }),
             "modify.quantize" | "musiccraft_modify_quantize" | "modify_quantize" => {
                 Ok(Self::ModifyQuantize {
@@ -689,6 +961,7 @@ fn dispatch_on_project_inner(project: &mut SongProject, cmd: Command) -> Result<
                     duration_beats: (length_beats * 0.5).max(0.5),
                 }],
                 audio_ref: None,
+                waveform_peaks: Vec::new(),
                 gain_db: 0.0,
             };
             project.add_region(&track_id, region.clone())?;
@@ -706,6 +979,139 @@ fn dispatch_on_project_inner(project: &mut SongProject, cmd: Command) -> Result<
             project.split_region(&region_id, split_beat)?;
             maybe_save(project, project_path.as_deref())?;
             Ok(json!({ "ok": true, "split_region_id": region_id, "at_beat": split_beat }))
+        }
+        Command::RegionMove {
+            project_path,
+            region_id,
+            new_start_beat,
+        } => {
+            if let Some(p) = &project_path {
+                *project = SongProject::load_from_file(&PathBuf::from(p))?;
+            }
+            project.move_region(&region_id, new_start_beat)?;
+            maybe_save(project, project_path.as_deref())?;
+            Ok(json!({ "ok": true, "region_id": region_id, "start_beat": new_start_beat }))
+        }
+        Command::RegionResize {
+            project_path,
+            region_id,
+            new_length_beats,
+        } => {
+            if let Some(p) = &project_path {
+                *project = SongProject::load_from_file(&PathBuf::from(p))?;
+            }
+            project.resize_region(&region_id, new_length_beats)?;
+            maybe_save(project, project_path.as_deref())?;
+            Ok(json!({ "ok": true, "region_id": region_id, "length_beats": new_length_beats }))
+        }
+        Command::RegionDuplicate {
+            project_path,
+            region_id,
+        } => {
+            if let Some(p) = &project_path {
+                *project = SongProject::load_from_file(&PathBuf::from(p))?;
+            }
+            let dup = project.duplicate_region(&region_id)?;
+            maybe_save(project, project_path.as_deref())?;
+            Ok(json!({ "ok": true, "region": dup }))
+        }
+        Command::RegionDelete {
+            project_path,
+            region_id,
+        } => {
+            if let Some(p) = &project_path {
+                *project = SongProject::load_from_file(&PathBuf::from(p))?;
+            }
+            project.delete_region(&region_id)?;
+            maybe_save(project, project_path.as_deref())?;
+            Ok(json!({ "ok": true, "deleted_region_id": region_id }))
+        }
+        Command::NoteAdd {
+            project_path,
+            region_id,
+            pitch,
+            start_beat,
+            duration_beats,
+            velocity,
+        } => {
+            if let Some(p) = &project_path {
+                *project = SongProject::load_from_file(&PathBuf::from(p))?;
+            }
+            let note = MidiNote {
+                pitch: pitch.min(127),
+                velocity: velocity.unwrap_or(100).min(127),
+                start_beat: start_beat.max(0.0),
+                duration_beats: duration_beats.max(0.125),
+            };
+            project.add_midi_note(&region_id, note.clone())?;
+            maybe_save(project, project_path.as_deref())?;
+            Ok(json!({ "ok": true, "region_id": region_id, "note": note }))
+        }
+        Command::NoteRemove {
+            project_path,
+            region_id,
+            pitch,
+            start_beat,
+        } => {
+            if let Some(p) = &project_path {
+                *project = SongProject::load_from_file(&PathBuf::from(p))?;
+            }
+            let removed = project.remove_midi_note(&region_id, pitch, start_beat)?;
+            maybe_save(project, project_path.as_deref())?;
+            Ok(json!({ "ok": true, "removed": removed }))
+        }
+        Command::MarkerAdd {
+            project_path,
+            name,
+            beat,
+        } => {
+            if let Some(p) = &project_path {
+                *project = SongProject::load_from_file(&PathBuf::from(p))?;
+            }
+            let marker = project.add_marker(&name, beat)?;
+            maybe_save(project, project_path.as_deref())?;
+            Ok(json!({ "ok": true, "marker": marker }))
+        }
+        Command::TrackAddFx {
+            project_path,
+            track_id,
+            fx_kind,
+        } => {
+            if let Some(p) = &project_path {
+                *project = SongProject::load_from_file(&PathBuf::from(p))?;
+            }
+            let fx = match fx_kind.to_ascii_lowercase().as_str() {
+                "eq" | "eq3band" => TrackFx::Eq3Band {
+                    enabled: true,
+                    low_db: 0.0,
+                    mid_db: 0.0,
+                    high_db: 0.0,
+                },
+                "comp" | "compressor" => TrackFx::Compressor {
+                    enabled: true,
+                    threshold_db: -18.0,
+                    ratio: 3.0,
+                },
+                "delay" => TrackFx::Delay {
+                    enabled: true,
+                    time_beats: 0.5,
+                    feedback: 0.35,
+                    mix: 0.25,
+                },
+                "reverb" => TrackFx::Reverb {
+                    enabled: true,
+                    room_size: 0.55,
+                    mix: 0.25,
+                },
+                other => {
+                    return Err(MusicCraftError::InvalidInput(format!(
+                        "unknown fx_kind '{other}'; expected eq, compressor, delay, or reverb"
+                    )));
+                }
+            };
+            project.add_track_fx(&track_id, fx.clone())?;
+            maybe_save(project, project_path.as_deref())?;
+            Ok(json!({ "ok": true, "track_id": track_id, "fx": fx }))
         }
         Command::ModifyQuantize {
             project_path,

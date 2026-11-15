@@ -19,8 +19,9 @@ pub const APP_NAME: &str = "MusicCraft";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use audio::{
-    export_djcraft_handoff, key_to_camelot, measure_loudness, read_wav_16bit, render_project_mix,
-    render_project_stereo_samples, render_vocal_mono, split_stems, write_wav_16bit, DjCraftHandoff,
+    compute_waveform_peaks, export_djcraft_handoff, key_to_camelot, measure_loudness,
+    read_wav_16bit, render_project_mix, render_project_stereo_samples,
+    render_project_with_metronome, render_vocal_mono, split_stems, write_wav_16bit, DjCraftHandoff,
     MixRenderReport, WavBuffer,
 };
 pub use dispatch::{
@@ -29,7 +30,7 @@ pub use dispatch::{
 };
 pub use error::{MusicCraftError, Result};
 pub use project::{
-    build_pitch_curve, midi_to_hz, parse_phoneme_line, MidiNote, MixRecipe, PhonemeEvent,
-    PitchPoint, Region, SongProject, StemAsset, StemKind, Track, TrackKind, VocalLine, VocalVoice,
-    DEFAULT_SAMPLE_RATE,
+    build_pitch_curve, midi_to_hz, parse_phoneme_line, Marker, MidiNote, MixRecipe, PhonemeEvent,
+    PitchPoint, Region, SongProject, StemAsset, StemKind, Track, TrackFx, TrackKind, VocalLine,
+    VocalVoice, DEFAULT_SAMPLE_RATE,
 };

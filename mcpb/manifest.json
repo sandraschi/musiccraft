@@ -3,7 +3,7 @@
   "name": "musiccraft",
   "display_name": "MusicCraft",
   "version": "__VERSION__",
-  "description": "MusicCraft Studio DAW, Virtual Vocal Synthesizer, Stem Separator & Offline Mix Renderer (17 tools).",
+  "description": "MusicCraft Studio DAW, Virtual Vocal Synthesizer, Stem Separator & Offline Mix Renderer (25 tools).",
   "author": {
     "name": "Sandra Schipal",
     "url": "https://github.com/sandraschi"
@@ -66,6 +66,38 @@
     {
       "name": "musiccraft_region_split",
       "description": "Split a timeline region into two regions at split_beat."
+    },
+    {
+      "name": "musiccraft_region_move",
+      "description": "Move a timeline region to a new start beat."
+    },
+    {
+      "name": "musiccraft_region_resize",
+      "description": "Resize a timeline region length in beats."
+    },
+    {
+      "name": "musiccraft_region_duplicate",
+      "description": "Duplicate a timeline region immediately after its end beat."
+    },
+    {
+      "name": "musiccraft_region_delete",
+      "description": "Delete a region from the arrangement."
+    },
+    {
+      "name": "musiccraft_note_add",
+      "description": "Add a MIDI note to a region in the piano roll."
+    },
+    {
+      "name": "musiccraft_note_remove",
+      "description": "Remove a MIDI note from a region by pitch and start beat."
+    },
+    {
+      "name": "musiccraft_marker_add",
+      "description": "Add a named timeline marker at a beat position."
+    },
+    {
+      "name": "musiccraft_track_add_fx",
+      "description": "Append a DSP effect (eq, compressor, delay, reverb) to a track FX rack."
     },
     {
       "name": "musiccraft_modify_quantize",

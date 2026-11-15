@@ -5,8 +5,8 @@
 #![deny(clippy::todo)]
 
 use musiccraft_core::{
-    command_catalog, dispatch, dispatch_on_project, read_wav_16bit, write_wav_16bit, Command,
-    SongProject,
+    command_catalog, compute_waveform_peaks, dispatch, dispatch_on_project, read_wav_16bit,
+    render_project_with_metronome, write_wav_16bit, Command, SongProject, TrackFx,
 };
 use serde_json::json;
 
@@ -153,4 +153,100 @@ fn test_command_from_name_accepts_dotted_and_underscore() {
     let cmd2 = Command::from_name_and_params("musiccraft_project_new", &json!({"name": "Test"}));
     assert!(cmd1.is_ok());
     assert!(cmd2.is_ok());
+}
+
+#[test]
+fn test_daw_arrangement_piano_roll_fx_markers_and_waveform() {
+    let mut proj = SongProject::new_demo();
+
+    // Move & resize region
+    assert!(proj.move_region("reg-chords", 2.0).is_ok());
+    assert_eq!(proj.tracks[0].regions[0].start_beat, 2.0);
+    assert!(proj.resize_region("reg-chords", 6.0).is_ok());
+    assert_eq!(proj.tracks[0].regions[0].length_beats, 6.0);
+
+    // Duplicate & delete region
+    let dup = proj.duplicate_region("reg-chords");
+    assert!(dup.is_ok());
+    assert_eq!(proj.tracks[0].regions.len(), 2);
+    if let Ok(d) = dup {
+        assert_eq!(d.start_beat, 8.0);
+        assert!(proj.delete_region(&d.id).is_ok());
+    }
+    assert_eq!(proj.tracks[0].regions.len(), 1);
+
+    // Piano roll MIDI note add / remove via dispatch
+    let add_note = dispatch_on_project(
+        &mut proj,
+        Command::NoteAdd {
+            project_path: None,
+            region_id: "reg-chords".to_string(),
+            pitch: 72,
+            start_beat: 1.5,
+            duration_beats: 0.5,
+            velocity: Some(110),
+        },
+    );
+    assert_eq!(add_note.get("ok").and_then(|v| v.as_bool()), Some(true));
+
+    let rem_note = dispatch_on_project(
+        &mut proj,
+        Command::NoteRemove {
+            project_path: None,
+            region_id: "reg-chords".to_string(),
+            pitch: 72,
+            start_beat: 1.5,
+        },
+    );
+    assert_eq!(
+        rem_note.get("removed").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    // Markers
+    let initial_markers = proj.markers.len();
+    let mk = dispatch_on_project(
+        &mut proj,
+        Command::MarkerAdd {
+            project_path: None,
+            name: "Chorus".to_string(),
+            beat: 8.0,
+        },
+    );
+    assert_eq!(mk.get("ok").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(proj.markers.len(), initial_markers + 1);
+
+    // Track FX rack & metronome render
+    let first_trk_id = proj.tracks[0].id.clone();
+    assert!(proj
+        .add_track_fx(
+            &first_trk_id,
+            TrackFx::Delay {
+                enabled: true,
+                time_beats: 0.5,
+                feedback: 0.35,
+                mix: 0.25,
+            }
+        )
+        .is_ok());
+    assert!(proj
+        .add_track_fx(
+            &first_trk_id,
+            TrackFx::Reverb {
+                enabled: true,
+                room_size: 0.5,
+                mix: 0.25,
+            }
+        )
+        .is_ok());
+
+    let (sr, tracks_rendered, samples) = render_project_with_metronome(&proj, true);
+    assert_eq!(sr, 44_100);
+    assert!(tracks_rendered >= 1);
+    assert!(!samples.is_empty());
+
+    // Waveform peak extraction
+    let peaks = compute_waveform_peaks(&samples, 2, 64);
+    assert_eq!(peaks.len(), 64);
+    assert!(peaks.iter().any(|&p| p > 0.0));
 }

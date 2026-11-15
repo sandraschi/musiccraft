@@ -1,6 +1,6 @@
 use crate::error::{MusicCraftError, Result};
 use crate::project::{
-    midi_to_hz, SongProject, StemAsset, StemKind, TrackKind, VocalLine, VocalVoice,
+    midi_to_hz, SongProject, StemAsset, StemKind, TrackFx, TrackKind, VocalLine, VocalVoice,
     DEFAULT_SAMPLE_RATE,
 };
 use serde::{Deserialize, Serialize};
@@ -327,8 +327,186 @@ pub fn render_vocal_mono(
     buf
 }
 
+/// Compute downsampled peak amplitudes in `[0.0, 1.0]` for timeline waveform display.
+pub fn compute_waveform_peaks(samples: &[f32], channels: u16, buckets: usize) -> Vec<f32> {
+    let ch = usize::from(channels.max(1));
+    let frames = samples.len() / ch;
+    if frames == 0 || buckets == 0 {
+        return Vec::new();
+    }
+    let step = (frames / buckets).max(1);
+    let mut peaks = Vec::with_capacity(buckets);
+    for b in 0..buckets {
+        let start = b.saturating_mul(step);
+        if start >= frames {
+            break;
+        }
+        let end = start.saturating_add(step).min(frames);
+        let mut max_amp = 0.0_f32;
+        for f in start..end {
+            let s = samples.get(f * ch).copied().unwrap_or(0.0).abs();
+            if s > max_amp {
+                max_amp = s;
+            }
+        }
+        peaks.push(max_amp.min(1.0));
+    }
+    peaks
+}
+
+/// Apply a REAPER-style per-track DSP FX chain in-place on interleaved stereo frames.
+fn apply_track_fx_chain(stereo: &mut [f32], fx_chain: &[TrackFx], sr: u32, bpm: f64) {
+    let frames = stereo.len() / 2;
+    if frames == 0 {
+        return;
+    }
+    for fx in fx_chain {
+        if !fx.is_enabled() {
+            continue;
+        }
+        match *fx {
+            TrackFx::Eq3Band {
+                low_db,
+                mid_db,
+                high_db,
+                ..
+            } => {
+                let g_low = db_to_linear(low_db);
+                let g_mid = db_to_linear(mid_db);
+                let g_high = db_to_linear(high_db);
+                let mut lp_l = 0.0_f32;
+                let mut lp_r = 0.0_f32;
+                let mut hp_l = 0.0_f32;
+                let mut hp_r = 0.0_f32;
+                for i in 0..frames {
+                    let l = stereo.get(i * 2).copied().unwrap_or(0.0);
+                    let r = stereo.get(i * 2 + 1).copied().unwrap_or(0.0);
+                    lp_l += 0.03 * (l - lp_l);
+                    lp_r += 0.03 * (r - lp_r);
+                    hp_l += 0.35 * (l - hp_l);
+                    hp_r += 0.35 * (r - hp_r);
+                    let mid_l = hp_l - lp_l;
+                    let mid_r = hp_r - lp_r;
+                    let hi_l = l - hp_l;
+                    let hi_r = r - hp_r;
+                    if let Some(sl) = stereo.get_mut(i * 2) {
+                        *sl = lp_l * g_low + mid_l * g_mid + hi_l * g_high;
+                    }
+                    if let Some(sr_slot) = stereo.get_mut(i * 2 + 1) {
+                        *sr_slot = lp_r * g_low + mid_r * g_mid + hi_r * g_high;
+                    }
+                }
+            }
+            TrackFx::Compressor {
+                threshold_db,
+                ratio,
+                ..
+            } => {
+                let thresh = db_to_linear(threshold_db).max(1e-4);
+                let inv_ratio = 1.0 / ratio.max(1.0);
+                let mut env = 0.0_f32;
+                for i in 0..frames {
+                    let l = stereo.get(i * 2).copied().unwrap_or(0.0);
+                    let r = stereo.get(i * 2 + 1).copied().unwrap_or(0.0);
+                    let level = l.abs().max(r.abs());
+                    let coeff = if level > env { 0.05 } else { 0.002 };
+                    env += coeff * (level - env);
+                    let gain = if env > thresh {
+                        let over = env / thresh;
+                        let compressed = thresh * over.powf(inv_ratio);
+                        compressed / env
+                    } else {
+                        1.0
+                    };
+                    if let Some(sl) = stereo.get_mut(i * 2) {
+                        *sl = l * gain;
+                    }
+                    if let Some(sr_slot) = stereo.get_mut(i * 2 + 1) {
+                        *sr_slot = r * gain;
+                    }
+                }
+            }
+            TrackFx::Delay {
+                time_beats,
+                feedback,
+                mix,
+                ..
+            } => {
+                let delay_secs = (f64::from(time_beats.max(0.05)) * 60.0) / bpm.max(20.0);
+                let delay_frames =
+                    ((delay_secs * f64::from(sr)).round() as usize).clamp(1, sr as usize * 2);
+                let fb = feedback.clamp(0.0, 0.85);
+                let wet = mix.clamp(0.0, 1.0);
+                let mut buf_l = vec![0.0_f32; delay_frames];
+                let mut buf_r = vec![0.0_f32; delay_frames];
+                let mut idx = 0usize;
+                for i in 0..frames {
+                    let l = stereo.get(i * 2).copied().unwrap_or(0.0);
+                    let r = stereo.get(i * 2 + 1).copied().unwrap_or(0.0);
+                    let dl = buf_l.get(idx).copied().unwrap_or(0.0);
+                    let dr = buf_r.get(idx).copied().unwrap_or(0.0);
+                    if let Some(slot) = buf_l.get_mut(idx) {
+                        *slot = l + dr * fb;
+                    }
+                    if let Some(slot) = buf_r.get_mut(idx) {
+                        *slot = r + dl * fb;
+                    }
+                    idx = (idx + 1) % delay_frames;
+                    if let Some(sl) = stereo.get_mut(i * 2) {
+                        *sl = l * (1.0 - wet * 0.5) + dl * wet;
+                    }
+                    if let Some(sr_slot) = stereo.get_mut(i * 2 + 1) {
+                        *sr_slot = r * (1.0 - wet * 0.5) + dr * wet;
+                    }
+                }
+            }
+            TrackFx::Reverb { room_size, mix, .. } => {
+                let scale = 0.5 + room_size.clamp(0.0, 1.0);
+                let tap1 = ((0.0297 * f64::from(scale) * f64::from(sr)) as usize).max(1);
+                let tap2 = ((0.0371 * f64::from(scale) * f64::from(sr)) as usize).max(1);
+                let mut d1 = vec![0.0_f32; tap1];
+                let mut d2 = vec![0.0_f32; tap2];
+                let mut i1 = 0usize;
+                let mut i2 = 0usize;
+                let wet = mix.clamp(0.0, 1.0);
+                for i in 0..frames {
+                    let l = stereo.get(i * 2).copied().unwrap_or(0.0);
+                    let r = stereo.get(i * 2 + 1).copied().unwrap_or(0.0);
+                    let mono = 0.5 * (l + r);
+                    let v1 = d1.get(i1).copied().unwrap_or(0.0);
+                    let v2 = d2.get(i2).copied().unwrap_or(0.0);
+                    if let Some(s) = d1.get_mut(i1) {
+                        *s = mono + v1 * 0.62;
+                    }
+                    if let Some(s) = d2.get_mut(i2) {
+                        *s = mono + v2 * 0.58;
+                    }
+                    i1 = (i1 + 1) % tap1;
+                    i2 = (i2 + 1) % tap2;
+                    let rev_l = v1 * 0.7 + v2 * 0.3;
+                    let rev_r = v2 * 0.7 + v1 * 0.3;
+                    if let Some(sl) = stereo.get_mut(i * 2) {
+                        *sl = l * (1.0 - wet * 0.4) + rev_l * wet;
+                    }
+                    if let Some(sr_slot) = stereo.get_mut(i * 2 + 1) {
+                        *sr_slot = r * (1.0 - wet * 0.4) + rev_r * wet;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Render the entire `SongProject` into an interleaved stereo f32 buffer `(sample_rate, tracks_rendered, samples)`.
 pub fn render_project_stereo_samples(project: &SongProject) -> (u32, usize, Vec<f32>) {
+    render_project_with_metronome(project, false)
+}
+
+/// Render the project with optional live metronome click track.
+pub fn render_project_with_metronome(
+    project: &SongProject,
+    include_metronome: bool,
+) -> (u32, usize, Vec<f32>) {
     let sr = project.sample_rate.max(8_000);
     let duration_secs = project.total_seconds().max(0.5);
     let total_frames = ((duration_secs * f64::from(sr)).ceil() as usize).max(1);
@@ -343,58 +521,133 @@ pub fn render_project_stereo_samples(project: &SongProject) -> (u32, usize, Vec<
             continue;
         }
         tracks_rendered = tracks_rendered.saturating_add(1);
-        let gain = db_to_linear(track.volume_db);
-        let pan = track.pan.clamp(-1.0, 1.0);
-        let left_gain = gain * ((1.0 - pan) * 0.5).sqrt();
-        let right_gain = gain * ((1.0 + pan) * 0.5).sqrt();
+        let mut trk_buf = vec![0.0_f32; total_frames.saturating_mul(2)];
 
         if track.kind == TrackKind::Vocal {
             if let Some(vocal) = &project.vocal_line {
                 let mono = render_vocal_mono(vocal, project.bpm, sr, total_frames);
                 for (i, &s) in mono.iter().enumerate() {
-                    if let Some(l) = stereo.get_mut(i * 2) {
-                        *l += s * left_gain;
+                    if let Some(l) = trk_buf.get_mut(i * 2) {
+                        *l += s;
                     }
-                    if let Some(r) = stereo.get_mut(i * 2 + 1) {
-                        *r += s * right_gain;
+                    if let Some(r) = trk_buf.get_mut(i * 2 + 1) {
+                        *r += s;
                     }
                 }
             }
-            continue;
+        } else {
+            // Render MIDI notes and imported WAV audio regions
+            for region in &track.regions {
+                let reg_gain = db_to_linear(region.gain_db);
+                if let Some(wav_path) = &region.audio_ref {
+                    if let Ok(wav) = read_wav_16bit(Path::new(wav_path)) {
+                        let start_frame =
+                            ((region.start_beat / beats_per_sec) * f64::from(sr)).round() as usize;
+                        let max_frames = ((region.length_beats / beats_per_sec) * f64::from(sr))
+                            .round() as usize;
+                        let wav_ch = usize::from(wav.channels.max(1));
+                        let wav_frames = wav.samples.len() / wav_ch;
+                        let sr_ratio = f64::from(wav.sample_rate) / f64::from(sr);
+                        for local_f in 0..max_frames {
+                            let dst_f = start_frame.saturating_add(local_f);
+                            if dst_f >= total_frames {
+                                break;
+                            }
+                            let src_f = ((local_f as f64) * sr_ratio) as usize;
+                            if src_f >= wav_frames {
+                                break;
+                            }
+                            let wl = wav.samples.get(src_f * wav_ch).copied().unwrap_or(0.0);
+                            let wr = if wav_ch == 2 {
+                                wav.samples.get(src_f * wav_ch + 1).copied().unwrap_or(wl)
+                            } else {
+                                wl
+                            };
+                            if let Some(dl) = trk_buf.get_mut(dst_f * 2) {
+                                *dl += wl * reg_gain;
+                            }
+                            if let Some(dr) = trk_buf.get_mut(dst_f * 2 + 1) {
+                                *dr += wr * reg_gain;
+                            }
+                        }
+                    }
+                }
+
+                for note in &region.notes {
+                    let abs_beat = region.start_beat + note.start_beat;
+                    let start_frame = ((abs_beat / beats_per_sec) * f64::from(sr)).round() as usize;
+                    let dur_frames =
+                        ((note.duration_beats / beats_per_sec) * f64::from(sr)).round() as usize;
+                    if start_frame >= total_frames || dur_frames == 0 {
+                        continue;
+                    }
+                    let end_frame = start_frame.saturating_add(dur_frames).min(total_frames);
+                    let freq = midi_to_hz(note.pitch);
+                    let vel = f32::from(note.velocity) / 127.0;
+                    let attack = (0.012 * (sr as f32)).max(1.0);
+                    let release = (0.08 * (sr as f32)).max(1.0);
+
+                    for (local_i, frame_idx) in (start_frame..end_frame).enumerate() {
+                        let remain = (end_frame - start_frame - local_i) as f32;
+                        let env =
+                            ((local_i as f32) / attack).min(1.0) * (remain / release).min(1.0);
+                        let t = (local_i as f32) / (sr as f32);
+                        let sig = 0.70 * (TAU * freq * t).sin()
+                            + 0.22 * (TAU * freq * 2.0 * t).sin()
+                            + 0.08 * (TAU * freq * 3.0 * t).sin();
+                        let s = sig * env * vel * reg_gain * 0.22;
+                        if let Some(l) = trk_buf.get_mut(frame_idx * 2) {
+                            *l += s;
+                        }
+                        if let Some(r) = trk_buf.get_mut(frame_idx * 2 + 1) {
+                            *r += s;
+                        }
+                    }
+                }
+            }
         }
 
-        // Render MIDI notes or audio fallback for Audio/MIDI/Stem tracks
-        for region in &track.regions {
-            let reg_gain = db_to_linear(region.gain_db);
-            for note in &region.notes {
-                let abs_beat = region.start_beat + note.start_beat;
-                let start_frame = ((abs_beat / beats_per_sec) * f64::from(sr)).round() as usize;
-                let dur_frames =
-                    ((note.duration_beats / beats_per_sec) * f64::from(sr)).round() as usize;
-                if start_frame >= total_frames || dur_frames == 0 {
-                    continue;
-                }
-                let end_frame = start_frame.saturating_add(dur_frames).min(total_frames);
-                let freq = midi_to_hz(note.pitch);
-                let vel = f32::from(note.velocity) / 127.0;
-                let attack = (0.012 * (sr as f32)).max(1.0);
-                let release = (0.08 * (sr as f32)).max(1.0);
+        // Process per-track FX chain (EQ, Compressor, Delay, Reverb)
+        apply_track_fx_chain(&mut trk_buf, &track.fx, sr, project.bpm);
 
-                for (local_i, frame_idx) in (start_frame..end_frame).enumerate() {
-                    let remain = (end_frame - start_frame - local_i) as f32;
-                    let env = ((local_i as f32) / attack).min(1.0) * (remain / release).min(1.0);
-                    let t = (local_i as f32) / (sr as f32);
-                    // Warm harmonic piano/bass timbre
-                    let sig = 0.70 * (TAU * freq * t).sin()
-                        + 0.22 * (TAU * freq * 2.0 * t).sin()
-                        + 0.08 * (TAU * freq * 3.0 * t).sin();
-                    let s = sig * env * vel * reg_gain * 0.22;
-                    if let Some(l) = stereo.get_mut(frame_idx * 2) {
-                        *l += s * left_gain;
-                    }
-                    if let Some(r) = stereo.get_mut(frame_idx * 2 + 1) {
-                        *r += s * right_gain;
-                    }
+        // Apply track volume & pan into master bus
+        let gain = db_to_linear(track.volume_db);
+        let pan = track.pan.clamp(-1.0, 1.0);
+        let left_gain = gain * ((1.0 - pan) * 0.5).sqrt();
+        let right_gain = gain * ((1.0 + pan) * 0.5).sqrt();
+
+        for i in 0..total_frames {
+            let tl = trk_buf.get(i * 2).copied().unwrap_or(0.0);
+            let tr = trk_buf.get(i * 2 + 1).copied().unwrap_or(0.0);
+            if let Some(ml) = stereo.get_mut(i * 2) {
+                *ml += tl * left_gain;
+            }
+            if let Some(mr) = stereo.get_mut(i * 2 + 1) {
+                *mr += tr * right_gain;
+            }
+        }
+    }
+
+    // Optional metronome click for live DAW playback
+    if include_metronome && project.metronome_enabled {
+        let total_beats = project.total_beats().ceil() as usize;
+        let click_frames = ((0.035 * f64::from(sr)) as usize).max(1);
+        for b in 0..total_beats {
+            let start_frame = (((b as f64) / beats_per_sec) * f64::from(sr)).round() as usize;
+            let is_bar = b % usize::from(project.time_signature.0.max(1)) == 0;
+            let click_hz = if is_bar { 1320.0_f32 } else { 880.0_f32 };
+            for i in 0..click_frames {
+                let dst = start_frame.saturating_add(i);
+                if dst >= total_frames {
+                    break;
+                }
+                let env = (1.0 - (i as f32) / (click_frames as f32)).powi(2);
+                let s = (TAU * click_hz * (i as f32) / (sr as f32)).sin() * env * 0.25;
+                if let Some(ml) = stereo.get_mut(dst * 2) {
+                    *ml += s;
+                }
+                if let Some(mr) = stereo.get_mut(dst * 2 + 1) {
+                    *mr += s;
                 }
             }
         }
