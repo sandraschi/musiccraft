@@ -10,12 +10,13 @@
 #![deny(clippy::unimplemented)]
 #![deny(clippy::todo)]
 
+mod player;
 mod tofu_guard;
 
 use eframe::egui;
 use musiccraft_core::{
-    command_catalog, dispatch_on_project, key_to_camelot, Command, CommandSpec, SongProject,
-    TrackKind, APP_NAME, APP_VERSION,
+    command_catalog, dispatch_on_project, key_to_camelot, render_project_stereo_samples, Command,
+    CommandSpec, SongProject, TrackKind, APP_NAME, APP_VERSION,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -100,7 +101,10 @@ struct MusicCraftApp {
     show_about: bool,
     show_preferences: bool,
 
-    // Interactive studio inputs
+    // Interactive studio inputs & transport
+    player: player::TransportPlayer,
+    audio_dirty: bool,
+    playhead_beat: f64,
     selected_track_id: Option<String>,
     selected_region_id: Option<String>,
     vocal_line_input: String,
@@ -153,6 +157,9 @@ impl MusicCraftApp {
             show_licenses: false,
             show_about: false,
             show_preferences: false,
+            player: player::TransportPlayer::new(),
+            audio_dirty: true,
+            playhead_beat: 0.0,
             selected_track_id,
             selected_region_id,
             vocal_line_input,
@@ -175,6 +182,7 @@ impl MusicCraftApp {
         if let Some(prev) = self.undo_stack.pop() {
             self.redo_stack.push(self.project.clone());
             self.project = prev;
+            self.audio_dirty = true;
             self.last_status = "Undo applied".to_string();
         }
     }
@@ -183,12 +191,29 @@ impl MusicCraftApp {
         if let Some(next) = self.redo_stack.pop() {
             self.undo_stack.push(self.project.clone());
             self.project = next;
+            self.audio_dirty = true;
             self.last_status = "Redo applied".to_string();
+        }
+    }
+
+    fn toggle_play(&mut self) {
+        if self.player.is_playing() {
+            self.player.pause();
+            self.last_status = "Transport: Paused".to_string();
+        } else {
+            if self.audio_dirty {
+                let (sr, _, samples) = render_project_stereo_samples(&self.project);
+                self.player.load_buffer(sr, samples);
+                self.audio_dirty = false;
+            }
+            self.player.play();
+            self.last_status = "Transport: Playing".to_string();
         }
     }
 
     fn run_cmd(&mut self, label: &str, cmd: Command) {
         self.push_undo();
+        self.audio_dirty = true;
         let res = dispatch_on_project(&mut self.project, cmd);
         let ok = res.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
         if ok {
@@ -279,7 +304,16 @@ impl MusicCraftApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        let wants_kb = ctx.egui_wants_keyboard_input();
         ctx.input(|i| {
+            if !wants_kb && i.key_pressed(egui::Key::Space) {
+                self.toggle_play();
+            }
+            if !wants_kb && i.key_pressed(egui::Key::Home) {
+                self.player.rewind();
+                self.playhead_beat = 0.0;
+                self.last_status = "Transport: Rewound to Bar 1".to_string();
+            }
             if (i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::P))
                 || (i.modifiers.command && i.key_pressed(egui::Key::K))
             {
@@ -710,6 +744,52 @@ impl MusicCraftApp {
 
     fn render_quick_toolbar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
+            // Transport Controls (Rewind, Play/Pause, Stop, Loop, Position)
+            if ui
+                .button("|< Rewind")
+                .on_hover_text("Rewind to Bar 1 (Home)")
+                .clicked()
+            {
+                self.player.rewind();
+                self.playhead_beat = 0.0;
+                self.last_status = "Transport: Rewound".to_string();
+            }
+            let is_playing = self.player.is_playing();
+            let play_label = if is_playing { "Pause" } else { "Play" };
+            let play_btn = if is_playing {
+                egui::Button::new(egui::RichText::new(play_label).color(egui::Color32::BLACK))
+                    .fill(egui::Color32::from_rgb(74, 222, 128))
+            } else {
+                egui::Button::new(play_label)
+            };
+            if ui
+                .add(play_btn)
+                .on_hover_text("Play / Pause (Space)")
+                .clicked()
+            {
+                self.toggle_play();
+            }
+            if ui
+                .button("Stop")
+                .on_hover_text("Stop and return to Bar 1")
+                .clicked()
+            {
+                self.player.stop();
+                self.playhead_beat = 0.0;
+                self.last_status = "Transport: Stopped".to_string();
+            }
+            let mut looping = self.player.is_looping();
+            if ui.toggle_value(&mut looping, "Loop").clicked() {
+                self.player.set_looping(looping);
+            }
+            let bar = (self.playhead_beat / 4.0).floor() as i32 + 1;
+            let beat_in_bar = (self.playhead_beat % 4.0) + 1.0;
+            let secs = (self.playhead_beat * 60.0) / self.project.bpm.max(20.0);
+            let mins = (secs / 60.0).floor() as u32;
+            let rem_s = secs % 60.0;
+            ui.monospace(format!("B{bar}.{beat_in_bar:.1} | {mins:02}:{rem_s:04.1}"));
+            ui.separator();
+
             ui.strong(&self.project.name);
             ui.separator();
             ui.label(format!(
@@ -833,10 +913,20 @@ impl MusicCraftApp {
         let lane_h = 54.0_f32;
 
         egui::ScrollArea::both().show(ui, |ui| {
-            // Beat ruler
+            // Beat ruler (click or drag to scrub playhead)
             let ruler_w = (total_beats as f32) * px_per_beat;
-            let (ruler_rect, _) =
-                ui.allocate_exact_size(egui::vec2(header_w + ruler_w, 24.0), egui::Sense::hover());
+            let (ruler_rect, ruler_resp) = ui.allocate_exact_size(
+                egui::vec2(header_w + ruler_w, 24.0),
+                egui::Sense::click_and_drag(),
+            );
+            if ruler_resp.clicked() || ruler_resp.dragged() {
+                if let Some(pos) = ruler_resp.interact_pointer_pos() {
+                    let local_x = (pos.x - (ruler_rect.left() + header_w)).max(0.0);
+                    let beat = f64::from(local_x / px_per_beat).min(total_beats);
+                    self.player.seek_beat(beat, self.project.bpm);
+                    self.playhead_beat = beat;
+                }
+            }
             let painter = ui.painter();
             painter.rect_filled(ruler_rect, 2.0, egui::Color32::from_rgb(15, 23, 42));
             let beat_count = total_beats.ceil() as i32;
@@ -864,6 +954,17 @@ impl MusicCraftApp {
                         egui::Color32::from_rgb(203, 213, 225),
                     );
                 }
+            }
+            let ph_ruler_x =
+                ruler_rect.left() + header_w + (self.playhead_beat as f32) * px_per_beat;
+            if ph_ruler_x >= ruler_rect.left() + header_w && ph_ruler_x <= ruler_rect.right() {
+                painter.line_segment(
+                    [
+                        egui::pos2(ph_ruler_x, ruler_rect.top()),
+                        egui::pos2(ph_ruler_x, ruler_rect.bottom()),
+                    ],
+                    egui::Stroke::new(2.5, egui::Color32::from_rgb(251, 191, 36)),
+                );
             }
 
             ui.add_space(4.0);
@@ -953,6 +1054,18 @@ impl MusicCraftApp {
                                 egui::Stroke::new(2.5, egui::Color32::from_rgb(248, 250, 252)),
                             );
                         }
+                    }
+
+                    // Live moving playhead line across this track lane
+                    let ph_x = lane_rect.left() + (self.playhead_beat as f32) * px_per_beat;
+                    if ph_x >= lane_rect.left() && ph_x <= lane_rect.right() {
+                        p.line_segment(
+                            [
+                                egui::pos2(ph_x, lane_rect.top()),
+                                egui::pos2(ph_x, lane_rect.bottom()),
+                            ],
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(251, 191, 36)),
+                        );
                     }
                 });
                 let _ = row_res;
@@ -1094,6 +1207,8 @@ impl MusicCraftApp {
                             ui.strong("Action");
                             ui.end_row();
                             for (k, a) in [
+                                ("Space", "Play / Pause Transport"),
+                                ("Home", "Rewind to Bar 1"),
                                 ("Ctrl+Shift+P / Ctrl+K", "Open Command Palette"),
                                 ("F1 / Ctrl+/", "Keyboard Shortcuts"),
                                 ("Ctrl+Z / Ctrl+Y", "Undo / Redo"),
@@ -1249,6 +1364,11 @@ impl eframe::App for MusicCraftApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_shortcuts(&ctx);
+        let total_beats = self.project.total_beats().max(16.0);
+        self.playhead_beat = self.player.tick_and_beat(self.project.bpm, total_beats);
+        if self.player.is_playing() {
+            ctx.request_repaint();
+        }
 
         egui::Panel::top("menu_bar").show(ui, |ui| {
             self.render_menu_bar(&ctx, ui);

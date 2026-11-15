@@ -20,7 +20,8 @@ pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use audio::{
     export_djcraft_handoff, key_to_camelot, measure_loudness, read_wav_16bit, render_project_mix,
-    render_vocal_mono, split_stems, write_wav_16bit, DjCraftHandoff, MixRenderReport, WavBuffer,
+    render_project_stereo_samples, render_vocal_mono, split_stems, write_wav_16bit, DjCraftHandoff,
+    MixRenderReport, WavBuffer,
 };
 pub use dispatch::{
     command_catalog, dispatch, dispatch_on_project, dispatch_sync, resolve_project, Command,

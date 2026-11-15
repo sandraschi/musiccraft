@@ -327,8 +327,8 @@ pub fn render_vocal_mono(
     buf
 }
 
-/// Offline-render the entire `SongProject` into a stereo 16-bit WAV file.
-pub fn render_project_mix(project: &SongProject, out_wav: &Path) -> Result<MixRenderReport> {
+/// Render the entire `SongProject` into an interleaved stereo f32 buffer `(sample_rate, tracks_rendered, samples)`.
+pub fn render_project_stereo_samples(project: &SongProject) -> (u32, usize, Vec<f32>) {
     let sr = project.sample_rate.max(8_000);
     let duration_secs = project.total_seconds().max(0.5);
     let total_frames = ((duration_secs * f64::from(sr)).ceil() as usize).max(1);
@@ -420,6 +420,14 @@ pub fn render_project_mix(project: &SongProject, out_wav: &Path) -> Result<MixRe
     for s in &mut stereo {
         *s = s.tanh();
     }
+
+    (sr, tracks_rendered, stereo)
+}
+
+/// Offline-render the entire `SongProject` into a stereo 16-bit WAV file.
+pub fn render_project_mix(project: &SongProject, out_wav: &Path) -> Result<MixRenderReport> {
+    let (sr, tracks_rendered, stereo) = render_project_stereo_samples(project);
+    let total_frames = stereo.len() / 2;
 
     write_wav_16bit(out_wav, sr, 2, &stereo)?;
     let (peak_db, rms_db, integrated_lufs) = measure_loudness(&stereo);
