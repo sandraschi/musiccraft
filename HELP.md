@@ -24,7 +24,8 @@ Pure-Rust ArtCraft studio workstation for DAW arrangement, virtual vocal synthes
 - **4-Band Stem Separator:** Splits any 16-bit PCM WAV (or the current project mix) into `vocals.wav`, `drums.wav`, `bass.wav`, and `other.wav` with per-stem RMS and peak dB metrics.
 - **Offline Mix Renderer:** Sums unmuted/soloed tracks with equal-power panning, soft-clip tanh limiting, and optional LUFS normalization (default `-14.0 LUFS`).
 - **DJCraft Handoff Packager:** Exports `master_mix.wav`, all 4 stems, and `handoff.json` (BPM, musical key, Camelot code, duration) ready for live deck performance.
-- **Unified Command Bus:** All 17 studio verbs execute through `musiccraft_core::Command::dispatch`, shared identically by the desktop UI, `musiccraft-mcp` CLI (`--json`), and MCP `2024-11-05` stdio server.
+- **Unified Command Bus:** All 25 studio verbs execute through `musiccraft_core::Command::dispatch`, shared identically by the desktop UI, `musiccraft-mcp` CLI (`--json`), and MCP `2024-11-05` stdio server.
+- **Real-Time Audio & DAW Editing:** Built-in `cpal` stereo playback transport (`Play`, `Pause`, `Stop`, `Rewind`, `Loop`, `Click` metronome), interactive timeline region drag-move/resize with snap-to-grid, WAV audio import with waveform rendering, interactive MIDI Piano Roll (`C3..C5`), timeline markers (`M`), and per-track DSP FX Rack (`EQ3`, `Compressor`, `Delay`, `Reverb`).
 
 ---
 
@@ -32,13 +33,14 @@ Pure-Rust ArtCraft studio workstation for DAW arrangement, virtual vocal synthes
 
 ### Window Controls
 - **Top Menu Bar:** `File`, `Edit`, `View`, `Insert`, `Modify`, `Commands`, `Window`, `Help` (with `switch_on_hover`).
-- **Command Palette (`Ctrl+Shift+P` or `Ctrl+K`):** Fuzzy-search and run any of the 17 studio commands.
-- **Center Tabs:** Switch between **Timeline**, **Piano Roll & Vocal**, and **Stems** from the top toolbar or `View` menu.
-- **Mixer Console (Bottom):** Adjust track volume (`-48..+6 dB`), pan (`-1..+1`), Mute (`M`), and Solo (`S`).
+- **Command Palette (`Ctrl+Shift+P` or `Ctrl+K`):** Fuzzy-search and run any of the 25 studio commands.
+- **Transport & Arrangement:** `Space` toggles Play/Pause, `Home` rewinds to Bar 1, click/drag the Beat Ruler to scrub, `Ctrl+D` duplicates a region, `S` splits at playhead, `Del` deletes, and `M` drops a marker.
+- **Center Tabs:** Switch between **Timeline**, **Piano Roll & Vocal** (left-click grid to draw notes, right-click to erase), and **Stems** from the top toolbar or `View` menu.
+- **Track FX Rack & Mixer Console:** Add/toggle `EQ3`, `Comp`, `Delay`, and `Reverb` per track in the right inspector, and adjust volume (`-48..+6 dB`), pan (`-1..+1`), Mute (`M`), and Solo (`S`) in the bottom mixer.
 
 ### CLI & Batch Runner
 ```powershell
-# List all 17 commands and inspect a schema
+# List all 25 commands and inspect a schema
 musiccraft-mcp commands --json
 musiccraft-mcp describe vocal.synth --json
 

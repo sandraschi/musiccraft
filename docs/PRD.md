@@ -1,23 +1,27 @@
-# MusicCraft PRD (draft 0 — pre-implementation)
+# MusicCraft PRD (v0.1.0 — Implemented)
 
-**Status:** draft, 2026-11-05. Freezes before any code lands.
+**Status:** implemented (`v0.1.0`), 2026-11-15.
 
 ## 1. Model
 
-A song project: `{ tracks[], vocalLine?, arrangement, stems, mix }`.
-Tracks hold regions (audio/MIDI); the vocal line holds phonemes + pitch curve;
-stems are the exportable separations; the mix is the render recipe. The project
-file is the document (same pattern as `databasecraft`'s `.dbcraft` file).
+A song project: `{ tracks[], markers[], vocalLine?, arrangement, stems, mix, loopRange, metronome }`.
+Tracks hold beat-indexed regions (audio with waveform peaks / MIDI notes) and a per-track DSP FX rack (`Eq3Band`, `Compressor`, `Delay`, `Reverb`); the vocal line holds phonemes + pitch curve;
+stems are the exportable separations; the mix is the render recipe. The `.mcraft` project
+file is the document.
 
-## 2. Verbs (planned, not promised)
+## 2. Verbs (25-tool Unified Dispatch Bus)
 
-- `project new|open|info` — song project lifecycle
-- `track add|list` — arrangement building
-- `stem split --in mix.wav` — stems out (via `stems-mcp` knowledge first)
-- `vocal synth --line phonemes.txt --voice OPERA` — the virtual singer
-- `mix render --out mix.wav` — offline render + artifact
-- `export stems|song` — handoff package for `djcraft`
-- `mcp` — stdio server over the same dispatch bus
+- `project.new|open|save|info` — song project lifecycle
+- `track.add|list|set_mix|add_fx` — arrangement & DSP FX rack building
+- `region.add|split|move|resize|duplicate|delete` — REAPER-style timeline clip editing
+- `note.add|remove` — interactive MIDI Piano Roll editing
+- `marker.add` — named timeline section markers
+- `modify.quantize|transpose` — rhythmic quantization & pitch transposition
+- `stem.split` — 4-band stem separation (`vocals`, `drums`, `bass`, `other`)
+- `vocal.synth` — formant virtual singer (`OPERA`, `SOPRANO`, `TENOR`, `CHOIR`, `SYNTH`)
+- `mix.render` — offline mastered 16-bit stereo WAV render + LUFS telemetry
+- `export.stems|song` — handoff package (`handoff.json`) for `djcraft`
+- `system.status` & `mcp` — diagnostics and stdio JSON-RPC `2024-11-05` server over the same dispatch bus
 
 ## 3. Consolidation map
 
@@ -45,9 +49,9 @@ that gate v1. No code until they are written down.
 ## 6. Phases
 
 - **0 (done 2026-11-05):** name reserved, plan published, lineage declared.
-- **1:** scope freeze — answer §5, lock the verb list.
-- **2:** pilot verbs (`project`, `track`, `export`) + `just ci` + fixtures.
-- **3:** vocal synth path + first democraft recipe (`music/stems-sim`).
+- **1 (done 2026-11-15):** scope freeze & L1/L2/L3 Pure-Rust ArtCraft 3-tier containment workspace.
+- **2 (done 2026-11-15):** 25-verb `Command::dispatch` bus, `musiccraft-mcp` CLI/MCP stdio server, and `mcpb/manifest.json` parity.
+- **3 (done 2026-11-15):** real-time `cpal` stereo transport, interactive timeline editing (drag-move/resize, snap, markers, WAV waveforms), MIDI Piano Roll, per-track DSP FX rack, WAV import, and Craft Menu Bar / 5-item Help suite.
 
 ## 7. UI/UX Architecture & Menu Bar Standard
 
